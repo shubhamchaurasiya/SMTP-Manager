@@ -1,0 +1,14 @@
+# Compiled / packaged builds
+*.zip
+
+# Nested git repos tracked separately
+SMTP Plugin Final/
+SMTP-Manager/
+
+# Claude internal session files
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
