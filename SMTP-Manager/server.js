@@ -45,10 +45,15 @@ async function initDB() {
   try { await db.execute("ALTER TABLE sites ADD COLUMN smtp_enabled INTEGER DEFAULT 1"); } catch(_) {}
 }
 
-// Lazy init — runs once per cold start
+// Lazy init — runs once per cold start, resets on failure so next request retries
 let _dbReady = null;
 function ensureDB() {
-  if (!_dbReady) _dbReady = initDB();
+  if (!_dbReady) {
+    _dbReady = initDB().catch(err => {
+      _dbReady = null; // allow retry on next request
+      throw err;
+    });
+  }
   return _dbReady;
 }
 
@@ -77,7 +82,15 @@ function now() { return Math.floor(Date.now() / 1000); }
 // ─── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(async (_req, _res, next) => { await ensureDB(); next(); });
+app.use(async (_req, _res, next) => {
+  try {
+    await ensureDB();
+    next();
+  } catch (err) {
+    console.error('[DB INIT ERROR]', err.message);
+    _res.status(500).json({ error: 'Database connection failed: ' + err.message });
+  }
+});
 
 // ─── HTTP Client for WP Sites ──────────────────────────────────────────────────
 const agentHttp = axios.create({
