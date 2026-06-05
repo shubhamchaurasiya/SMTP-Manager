@@ -1,6 +1,6 @@
 const express   = require('express');
 const axios     = require('axios');
-const { createClient } = require('@libsql/client');
+const { createClient } = require('@libsql/client/web');
 const path      = require('path');
 const fs        = require('fs');
 const https     = require('https');
@@ -87,7 +87,7 @@ app.use(async (_req, _res, next) => {
     await ensureDB();
     next();
   } catch (err) {
-    console.error('[DB INIT ERROR]', err.message);
+    console.error('[DB INIT ERROR]', err.message, err.stack);
     _res.status(500).json({ error: 'Database connection failed: ' + err.message });
   }
 });

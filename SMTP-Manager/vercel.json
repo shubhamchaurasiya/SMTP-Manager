@@ -5,16 +5,12 @@
       "src": "server.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["public/**", "smtp-agent.php"]
+        "includeFiles": ["public/**", "smtp-agent.php"],
+        "maxDuration": 30
       }
     }
   ],
   "routes": [
     { "src": "/(.*)", "dest": "/server.js" }
-  ],
-  "functions": {
-    "server.js": {
-      "maxDuration": 30
-    }
-  }
+  ]
 }
