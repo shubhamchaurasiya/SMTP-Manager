@@ -20,3 +20,5 @@ desktop.ini
 # Secrets
 .env
 .env.*
+
+.vercel

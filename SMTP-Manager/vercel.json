@@ -5,7 +5,7 @@
       "src": "server.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["public/**", "smtp-agent.php"],
+        "includeFiles": ["public/**", "smtp-agent.php", "plugin/**"],
         "maxDuration": 30
       }
     }

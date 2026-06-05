@@ -99,6 +99,7 @@ function router() {
   else if (page === 'sites')               renderSites();
   else if (page === 'site' && id)          renderSiteDetail(id);
   else if (page === 'alerts')              renderAlerts();
+  else if (page === 'updates')             renderUpdates();
   else if (page === 'settings')            renderSettings();
   else                                     renderDashboard();
 }
@@ -1324,6 +1325,197 @@ function downloadAgentFile(token) {
   a.click();
   document.body.removeChild(a);
   toast('smtp-agent.php downloaded — token is already set! Just upload to WordPress.', 'success', 6000);
+}
+
+// ══════════════════════════════════════
+// PUSH UPDATES PAGE
+// ══════════════════════════════════════
+async function renderUpdates() {
+  setActiveNav('updates');
+  renderPage(`
+    <div class="page-header">
+      <div class="page-header-left">
+        <h1>Push Updates</h1>
+        <p>Push the latest plugin version to all your WordPress sites instantly</p>
+      </div>
+      <button class="btn btn-primary" id="push-all-btn" onclick="pushUpdateAll()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+        Push to All Sites
+      </button>
+    </div>
+
+    <!-- Current Version Card -->
+    <div class="card" style="margin-bottom:24px">
+      <div class="card-header">
+        <div>
+          <div class="card-title">📦 Plugin Version in Dashboard</div>
+          <div class="card-subtitle">These files will be pushed to all sites</div>
+        </div>
+      </div>
+      <div class="card-body" id="version-info">
+        <div class="loading-spinner" style="margin:20px auto"></div>
+      </div>
+    </div>
+
+    <!-- How it works -->
+    <div class="card" style="margin-bottom:24px">
+      <div class="card-header"><div class="card-title">🔄 How to Update Plugin Files</div></div>
+      <div class="card-body">
+        <ol style="color:var(--text2);font-size:13px;line-height:2.2;padding-left:18px">
+          <li>Edit <code style="color:var(--accent)">smtp.php</code> or <code style="color:var(--accent)">smtp-agent.php</code> on your machine</li>
+          <li>Copy the updated files into <code style="color:var(--accent)">SMTP-Manager/plugin/</code> folder</li>
+          <li>Run <code style="color:var(--yellow)">git push origin main</code> — Vercel auto-redeploys in ~30 seconds</li>
+          <li>Come back here and click <strong style="color:var(--green)">Push to All Sites</strong></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Per-site push results -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">🌐 Sites</div>
+          <div class="card-subtitle">Push update to individual sites or all at once</div>
+        </div>
+      </div>
+      <div class="card-body" id="update-sites-list">
+        <div class="loading-spinner" style="margin:20px auto"></div>
+      </div>
+    </div>
+  `);
+
+  // Load plugin version info
+  try {
+    const info = await api.get('/updates/info');
+    const versionEl = document.getElementById('version-info');
+    if (versionEl) {
+      versionEl.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          ${info.map(f => `
+            <div style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:10px">
+              <div style="font-size:12px;color:var(--text3);text-transform:uppercase;font-weight:700;margin-bottom:6px">${esc(f.filename)}</div>
+              ${f.found
+                ? `<div style="font-size:20px;font-weight:800;color:var(--text)">v${esc(f.version)}</div>
+                   <div style="font-size:12px;color:var(--text3);margin-top:4px">${(f.size/1024).toFixed(1)} KB</div>`
+                : `<div style="color:var(--red);font-size:13px">⚠️ File not found in dashboard/plugin/</div>`
+              }
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+  } catch(e) {
+    const versionEl = document.getElementById('version-info');
+    if (versionEl) versionEl.innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`;
+  }
+
+  // Load sites list
+  await loadUpdateSitesList();
+}
+
+async function loadUpdateSitesList() {
+  try {
+    const sites = await api.get('/sites');
+    state.sites = sites;
+    const el = document.getElementById('update-sites-list');
+    if (!el) return;
+
+    if (!sites.length) {
+      el.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌐</div><h3>No Sites Yet</h3><p>Add sites first from the Sites page.</p></div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <table id="update-table">
+        <thead>
+          <tr>
+            <th>Site Name</th>
+            <th>URL</th>
+            <th>Status</th>
+            <th style="text-align:center">Update Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sites.map(s => `
+            <tr id="update-row-${s.id}">
+              <td style="font-weight:700">${esc(s.name)}</td>
+              <td><a href="${esc(s.url||s.agent_url)}" target="_blank" style="color:var(--accent)">${esc(s.url||'—')}</a></td>
+              <td>${statusBadge(s.status)}</td>
+              <td style="text-align:center" id="update-status-${s.id}"><span style="color:var(--text3);font-size:13px">—</span></td>
+              <td>
+                <button class="btn btn-sm btn-primary" onclick="pushUpdateOne(${s.id}, '${esc(s.name)}')">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+                  Push
+                </button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch(e) {
+    const el = document.getElementById('update-sites-list');
+    if (el) el.innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`;
+  }
+}
+
+function setUpdateStatus(siteId, html) {
+  const el = document.getElementById(`update-status-${siteId}`);
+  if (el) el.innerHTML = html;
+}
+
+async function pushUpdateOne(id, name) {
+  setUpdateStatus(id, `<div class="loading-spinner" style="margin:0 auto;width:16px;height:16px"></div>`);
+  try {
+    const r = await api.post(`/updates/push/${id}`);
+    if (r.success) {
+      setUpdateStatus(id, `<span class="badge badge-online">✅ Updated</span>`);
+      toast(`✅ ${name} updated successfully!`, 'success');
+    } else {
+      const errMsg = (r.errors && r.errors.length) ? r.errors[0] : (r.error || 'Failed');
+      setUpdateStatus(id, `<span class="badge badge-offline" title="${esc(errMsg)}">❌ Failed</span>`);
+      toast(`❌ ${name}: ${errMsg}`, 'error', 6000);
+    }
+  } catch(e) {
+    setUpdateStatus(id, `<span class="badge badge-offline" title="${esc(e.message)}">❌ Error</span>`);
+    toast(`❌ ${name}: ${e.message}`, 'error', 6000);
+  }
+}
+
+async function pushUpdateAll() {
+  const btn = document.getElementById('push-all-btn');
+  const sites = state.sites;
+  if (!sites.length) return toast('No sites registered yet', 'warning');
+
+  if (!confirm(`Push the latest plugin update to all ${sites.length} sites?`)) return;
+
+  // Reset all statuses
+  sites.forEach(s => setUpdateStatus(s.id, `<div class="loading-spinner" style="margin:0 auto;width:16px;height:16px"></div>`));
+  if (btn) { btn.disabled = true; btn.textContent = 'Pushing...'; }
+
+  toast(`Pushing update to ${sites.length} sites — this may take a minute...`, 'info', 8000);
+
+  try {
+    const results = await api.post('/updates/push-all');
+    let ok = 0, fail = 0;
+    results.forEach(r => {
+      if (r.success) {
+        ok++;
+        setUpdateStatus(r.id, `<span class="badge badge-online">✅ Updated</span>`);
+      } else {
+        fail++;
+        const errMsg = (r.errors && r.errors.length) ? r.errors[0] : (r.error || 'Failed');
+        setUpdateStatus(r.id, `<span class="badge badge-offline" title="${esc(errMsg)}">❌ Failed</span>`);
+      }
+    });
+    toast(`Push complete — ✅ ${ok} updated, ❌ ${fail} failed`, ok > 0 ? 'success' : 'error', 8000);
+  } catch(e) {
+    toast(`Push failed: ${e.message}`, 'error');
+    sites.forEach(s => setUpdateStatus(s.id, `<span class="badge badge-offline">❌ Error</span>`));
+  }
+
+  if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg> Push to All Sites'; }
 }
 
 // Auto-refresh sidebar stats every 10s

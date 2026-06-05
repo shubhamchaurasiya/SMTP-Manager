@@ -245,10 +245,11 @@ function agent_push_update($body) {
         agent_respond(['success' => false, 'error' => 'No files provided']);
     }
 
-    $allowed    = ['smtp.php', 'smtp-agent.php'];
+    // Only these filenames are allowed to be written
+    $allowed   = ['smtp.php', 'smtp-agent.php'];
     $plugin_dir = dirname(__FILE__);
-    $updated    = [];
-    $errors     = [];
+    $updated   = [];
+    $errors    = [];
 
     foreach ($body['files'] as $filename => $content) {
         if (!in_array($filename, $allowed, true)) {
@@ -262,6 +263,7 @@ function agent_push_update($body) {
 
         $target = $plugin_dir . DIRECTORY_SEPARATOR . $filename;
 
+        // Backup the existing file before overwriting
         if (file_exists($target)) {
             @copy($target, $target . '.bak');
         }

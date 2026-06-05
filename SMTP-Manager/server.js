@@ -348,6 +348,56 @@ app.post('/api/settings', async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Plugin Update Push ───────────────────────────────────────────────────────
+const PLUGIN_DIR = path.join(__dirname, 'plugin');
+
+app.get('/api/updates/info', (req, res) => {
+  const filenames = ['smtp.php', 'smtp-agent.php'];
+  const info = filenames.map(filename => {
+    const filePath = path.join(PLUGIN_DIR, filename);
+    if (!fs.existsSync(filePath)) return { filename, found: false };
+    const content  = fs.readFileSync(filePath, 'utf8');
+    const verMatch = content.match(/Version:\s*([^\n\r*]+)/);
+    const version  = verMatch ? verMatch[1].trim() : 'unknown';
+    return { filename, version, size: content.length, found: true };
+  });
+  res.json(info);
+});
+
+app.post('/api/updates/push/:id', wrap(async (req, res) => {
+  const site = await getSite(req.params.id);
+  const files = {};
+  for (const filename of ['smtp.php', 'smtp-agent.php']) {
+    const filePath = path.join(PLUGIN_DIR, filename);
+    if (fs.existsSync(filePath)) files[filename] = fs.readFileSync(filePath, 'utf8');
+  }
+  if (!Object.keys(files).length)
+    return res.status(400).json({ error: 'No plugin files found in dashboard/plugin/' });
+  const data = await callAgent(site, 'push_update', 'POST', { files });
+  res.json({ id: site.id, name: site.name, url: site.url, ...data });
+}));
+
+app.post('/api/updates/push-all', async (req, res) => {
+  const sites = await dbAll('SELECT * FROM sites');
+  const files = {};
+  for (const filename of ['smtp.php', 'smtp-agent.php']) {
+    const filePath = path.join(PLUGIN_DIR, filename);
+    if (fs.existsSync(filePath)) files[filename] = fs.readFileSync(filePath, 'utf8');
+  }
+  if (!Object.keys(files).length)
+    return res.status(400).json({ error: 'No plugin files found in dashboard/plugin/' });
+  const results = [];
+  for (const site of sites) {
+    try {
+      const data = await callAgent(site, 'push_update', 'POST', { files });
+      results.push({ id: site.id, name: site.name, url: site.url, ...data });
+    } catch (err) {
+      results.push({ id: site.id, name: site.name, url: site.url, success: false, error: err.message });
+    }
+  }
+  res.json(results);
+});
+
 // ─── Auto-Registration endpoint (called by WordPress plugin on activation) ────
 app.post('/api/register', async (req, res) => {
   // Verify the shared registration key
