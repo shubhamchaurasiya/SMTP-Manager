@@ -348,6 +348,39 @@ app.post('/api/settings', async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Auto-Registration endpoint (called by WordPress plugin on activation) ────
+app.post('/api/register', async (req, res) => {
+  // Verify the shared registration key
+  const key = req.headers['x-registration-key'] || '';
+  const validKey = process.env.SMTP_REGISTRATION_KEY || 'smtpfallback_reg_shubham_2024_secure';
+  if (!key || key !== validKey) {
+    return res.status(401).json({ error: 'Invalid registration key' });
+  }
+
+  const { name, url, agent_url, api_token, notes } = req.body;
+  if (!name || !agent_url || !api_token)
+    return res.status(400).json({ error: 'name, agent_url, and api_token are required' });
+
+  // If this site is already registered (same agent_url), update it instead of duplicating
+  const existing = await dbGet('SELECT * FROM sites WHERE agent_url = ?', [agent_url.trim()]);
+  if (existing) {
+    await dbRun(
+      'UPDATE sites SET name=?, url=?, api_token=?, notes=?, status=? WHERE id=?',
+      [name, (url || '').replace(/\/+$/, ''), api_token.trim(), notes || existing.notes, 'unknown', existing.id]
+    );
+    const updated = await dbGet('SELECT * FROM sites WHERE id = ?', [existing.id]);
+    return res.json({ success: true, action: 'updated', site: updated });
+  }
+
+  // New site — insert
+  const id = await dbInsert(
+    'INSERT INTO sites (name, url, agent_url, api_token, notes) VALUES (?, ?, ?, ?, ?)',
+    [name, (url || '').replace(/\/+$/, ''), agent_url.trim(), api_token.trim(), notes || '']
+  );
+  const site = await dbGet('SELECT * FROM sites WHERE id = ?', [id]);
+  res.json({ success: true, action: 'created', site });
+});
+
 // Generate token (uses built-in crypto — no uuid package needed)
 app.get('/api/generate-token', (req, res) => {
   const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
