@@ -1,0 +1,33 @@
+# WordPress & PHP
+*.log
+*.cache
+debug.log
+smtp-fallback-debug.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Composer (if ever added)
+vendor/
+composer.lock
+
+# Node (SMTP-Manager is a sibling, not part of this plugin)
+node_modules/
+
+# Build artefacts
+*.zip
+dist/
+
+# Secrets — never commit real tokens or passwords
+*.env
+.env.*
+secrets.php

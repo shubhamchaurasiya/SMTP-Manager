@@ -1,0 +1,855 @@
+/* ============================================================
+   SMTP Fallback Plugin - Admin UI
+   All rules scoped under #smtp-fallback-page for specificity
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* ---- Reset inside our page ---- */
+#smtp-fallback-page,
+#smtp-fallback-page * {
+    box-sizing: border-box !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+#smtp-fallback-page {
+    max-width: 100% !important;
+    padding-bottom: 60px !important;
+    padding-right: 20px !important;
+    color: #1a1a2e !important;
+}
+
+/* Make WP content area use full width */
+#wpcontent {
+    padding-left: 20px !important;
+}
+
+#wpbody-content {
+    padding-right: 0 !important;
+}
+
+/* ============================================================
+   NOTICES ANCHOR — keeps WP plugin notices above the hero
+   ============================================================ */
+
+/* Hidden h1 that acts as an anchor for WP admin notice injection */
+#smtp-fallback-page .smtpfb-screen-reader-h1 {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0,0,0,0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+}
+
+/* Any WP admin notices injected after the h1 — style them properly */
+#smtp-fallback-page .notice,
+#smtp-fallback-page .updated,
+#smtp-fallback-page .error.settings-error {
+    margin: 8px 0 16px !important;
+    border-radius: 10px !important;
+    border-left-width: 4px !important;
+}
+
+/* ============================================================
+   HERO BANNER
+   ============================================================ */
+#smtp-fallback-page .smtpfb-hero {
+    background: linear-gradient(135deg, #6C63FF 0%, #9b59b6 50%, #FF6584 100%) !important;
+    border-radius: 16px !important;
+    padding: 36px 44px !important;
+    margin: 16px 0 28px !important;
+    color: #fff !important;
+    position: relative !important;
+    overflow: hidden !important;
+    box-shadow: 0 20px 60px rgba(108,99,255,.25) !important;
+    border: none !important;
+}
+
+#smtp-fallback-page .smtpfb-hero::before {
+    content: '' !important;
+    position: absolute !important;
+    top: -60px !important;
+    right: -60px !important;
+    width: 220px !important;
+    height: 220px !important;
+    background: rgba(255,255,255,.08) !important;
+    border-radius: 50% !important;
+}
+
+#smtp-fallback-page .smtpfb-hero::after {
+    content: '' !important;
+    position: absolute !important;
+    bottom: -40px !important;
+    left: 30% !important;
+    width: 160px !important;
+    height: 160px !important;
+    background: rgba(255,255,255,.06) !important;
+    border-radius: 50% !important;
+}
+
+#smtp-fallback-page .smtpfb-hero-badge {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    background: rgba(255,255,255,.22) !important;
+    border: 1px solid rgba(255,255,255,.35) !important;
+    border-radius: 100px !important;
+    padding: 4px 14px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    margin-bottom: 14px !important;
+    position: relative !important;
+    z-index: 1 !important;
+    letter-spacing: .5px !important;
+    text-transform: uppercase !important;
+    color: #fff !important;
+}
+
+#smtp-fallback-page .smtpfb-hero-title {
+    font-size: 28px !important;
+    font-weight: 800 !important;
+    margin: 0 0 10px !important;
+    letter-spacing: -.5px !important;
+    color: #fff !important;
+    border: none !important;
+    padding: 0 !important;
+    position: relative !important;
+    z-index: 1 !important;
+    line-height: 1.2 !important;
+    background: none !important;
+    display: block !important;
+}
+
+#smtp-fallback-page .smtpfb-hero p {
+    margin: 0 !important;
+    font-size: 15px !important;
+    color: rgba(255,255,255,.88) !important;
+    position: relative !important;
+    z-index: 1 !important;
+    max-width: 580px !important;
+    line-height: 1.6 !important;
+}
+
+#smtp-fallback-page .smtpfb-hero p strong {
+    color: #fff !important;
+}
+
+/* ============================================================
+   TABS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-tabs {
+    display: flex !important;
+    gap: 4px !important;
+    background: #f4f3ff !important;
+    border: 1px solid #e8e6ff !important;
+    border-radius: 12px !important;
+    padding: 6px !important;
+    margin-bottom: 28px !important;
+    width: fit-content !important;
+}
+
+#smtp-fallback-page .smtpfb-tab-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 9px 20px !important;
+    border-radius: 8px !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    color: #7b7b9d !important;
+    cursor: pointer !important;
+    border: none !important;
+    background: transparent !important;
+    transition: all .2s ease !important;
+    text-decoration: none !important;
+    box-shadow: none !important;
+    line-height: 1 !important;
+    height: auto !important;
+    outline: none !important;
+}
+
+#smtp-fallback-page .smtpfb-tab-btn:hover {
+    color: #6C63FF !important;
+    background: rgba(108,99,255,.08) !important;
+}
+
+#smtp-fallback-page .smtpfb-tab-btn.active {
+    background: #fff !important;
+    color: #6C63FF !important;
+    box-shadow: 0 2px 12px rgba(108,99,255,.18) !important;
+}
+
+/* ============================================================
+   CARDS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-card {
+    background: #ffffff !important;
+    border: 1px solid #e8e6ff !important;
+    border-radius: 16px !important;
+    padding: 28px 30px !important;
+    margin-bottom: 20px !important;
+    box-shadow: 0 4px 20px rgba(108,99,255,.08) !important;
+    transition: box-shadow .25s ease, transform .25s ease !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+#smtp-fallback-page .smtpfb-card:hover {
+    box-shadow: 0 8px 32px rgba(108,99,255,.14) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* coloured left stripe */
+#smtp-fallback-page .smtpfb-card.primary-card::before {
+    content: '' !important;
+    position: absolute !important;
+    left: 0 !important; top: 0 !important; bottom: 0 !important;
+    width: 4px !important;
+    background: linear-gradient(180deg, #6C63FF, #9b59b6) !important;
+    border-radius: 4px 0 0 4px !important;
+}
+
+#smtp-fallback-page .smtpfb-card.fallback-card::before {
+    content: '' !important;
+    position: absolute !important;
+    left: 0 !important; top: 0 !important; bottom: 0 !important;
+    width: 4px !important;
+    background: linear-gradient(180deg, #FF6584, #f59e0b) !important;
+    border-radius: 4px 0 0 4px !important;
+}
+
+/* card header */
+#smtp-fallback-page .smtpfb-card-header {
+    display: flex !important;
+    align-items: center !important;
+    gap: 14px !important;
+    margin-bottom: 22px !important;
+    padding-bottom: 18px !important;
+    border-bottom: 1px solid #e8e6ff !important;
+}
+
+#smtp-fallback-page .smtpfb-card-icon {
+    width: 46px !important;
+    height: 46px !important;
+    border-radius: 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 22px !important;
+    flex-shrink: 0 !important;
+    line-height: 1 !important;
+}
+
+#smtp-fallback-page .icon-purple { background: linear-gradient(135deg, #ede9ff, #d4c5ff) !important; }
+#smtp-fallback-page .icon-blue   { background: linear-gradient(135deg, #dbeafe, #bfdbfe) !important; }
+#smtp-fallback-page .icon-green  { background: linear-gradient(135deg, #dcfce7, #bbf7d0) !important; }
+#smtp-fallback-page .icon-orange { background: linear-gradient(135deg, #ffedd5, #fed7aa) !important; }
+#smtp-fallback-page .icon-pink   { background: linear-gradient(135deg, #fce7f3, #fbcfe8) !important; }
+#smtp-fallback-page .icon-indigo { background: linear-gradient(135deg, #e0e7ff, #c7d2fe) !important; }
+
+#smtp-fallback-page .smtpfb-card-title {
+    font-size: 17px !important;
+    font-weight: 700 !important;
+    color: #1a1a2e !important;
+    margin: 0 0 3px !important;
+    line-height: 1.3 !important;
+}
+
+#smtp-fallback-page .smtpfb-card-subtitle {
+    font-size: 13px !important;
+    color: #7b7b9d !important;
+    margin: 0 !important;
+}
+
+/* ============================================================
+   FIELD GROUPS & LABELS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-field-group {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 20px !important;
+    margin-bottom: 20px !important;
+    align-items: start !important;
+}
+
+#smtp-fallback-page .smtpfb-field-group.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+#smtp-fallback-page .smtpfb-field {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+}
+
+#smtp-fallback-page .smtpfb-label {
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    color: #1a1a2e !important;
+    letter-spacing: .2px !important;
+    display: block !important;
+    margin-bottom: 0 !important;
+}
+
+#smtp-fallback-page .smtpfb-label .required {
+    color: #ef4444 !important;
+    margin-left: 2px !important;
+}
+
+#smtp-fallback-page .smtpfb-hint {
+    font-size: 12px !important;
+    color: #7b7b9d !important;
+    margin: 0 !important;
+    line-height: 1.5 !important;
+    font-style: normal !important;
+}
+
+/* ============================================================
+   INPUTS & SELECTS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-input,
+#smtp-fallback-page .smtpfb-select {
+    width: 100% !important;
+    padding: 10px 14px !important;
+    border: 1.5px solid #e8e6ff !important;
+    border-radius: 10px !important;
+    font-size: 14px !important;
+    font-family: 'Inter', sans-serif !important;
+    color: #1a1a2e !important;
+    background: #fafafe !important;
+    transition: border-color .2s ease, box-shadow .2s ease !important;
+    outline: none !important;
+    box-shadow: none !important;
+    height: auto !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    line-height: 1.5 !important;
+}
+
+#smtp-fallback-page .smtpfb-input:focus,
+#smtp-fallback-page .smtpfb-select:focus {
+    border-color: #6C63FF !important;
+    box-shadow: 0 0 0 3px rgba(108,99,255,.15) !important;
+    background: #fff !important;
+    outline: none !important;
+}
+
+#smtp-fallback-page .smtpfb-input::placeholder {
+    color: #c4c3d0 !important;
+}
+
+/* Select wrapper */
+#smtp-fallback-page .smtpfb-select-wrap {
+    position: relative !important;
+}
+
+#smtp-fallback-page .smtpfb-select-wrap::after {
+    content: '▾' !important;
+    position: absolute !important;
+    right: 12px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    color: #7b7b9d !important;
+    pointer-events: none !important;
+    font-size: 13px !important;
+}
+
+#smtp-fallback-page .smtpfb-select-wrap .smtpfb-select {
+    padding-right: 32px !important;
+    cursor: pointer !important;
+}
+
+/* Password wrapper */
+#smtp-fallback-page .smtpfb-pass-wrap {
+    position: relative !important;
+}
+
+#smtp-fallback-page .smtpfb-pass-wrap .smtpfb-input {
+    padding-right: 44px !important;
+}
+
+#smtp-fallback-page .smtpfb-pass-toggle {
+    position: absolute !important;
+    right: 10px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    background: none !important;
+    border: none !important;
+    cursor: pointer !important;
+    color: #7b7b9d !important;
+    font-size: 16px !important;
+    padding: 0 !important;
+    line-height: 1 !important;
+    box-shadow: none !important;
+    height: auto !important;
+    width: auto !important;
+    transition: color .2s !important;
+}
+
+#smtp-fallback-page .smtpfb-pass-toggle:hover {
+    color: #6C63FF !important;
+    background: none !important;
+}
+
+/* ============================================================
+   TOGGLE SWITCHES
+   ============================================================ */
+#smtp-fallback-page .smtpfb-toggle-row {
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 14px !important;
+    padding: 15px 0 !important;
+    border-bottom: 1px solid #f0eeff !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle-row:last-child {
+    border-bottom: none !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle {
+    position: relative !important;
+    width: 46px !important;
+    height: 26px !important;
+    flex-shrink: 0 !important;
+    margin-top: 2px !important;
+    display: inline-block !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle input[type="checkbox"] {
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    position: absolute !important;
+    margin: 0 !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle-slider {
+    position: absolute !important;
+    inset: 0 !important;
+    background: #ddd !important;
+    border-radius: 100px !important;
+    cursor: pointer !important;
+    transition: all .25s ease !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle-slider::before {
+    content: '' !important;
+    position: absolute !important;
+    width: 20px !important;
+    height: 20px !important;
+    left: 3px !important;
+    top: 3px !important;
+    background: #fff !important;
+    border-radius: 50% !important;
+    transition: transform .25s ease !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,.2) !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle input[type="checkbox"]:checked + .smtpfb-toggle-slider {
+    background: linear-gradient(90deg, #6C63FF, #9b59b6) !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle input[type="checkbox"]:checked + .smtpfb-toggle-slider::before {
+    transform: translateX(20px) !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle-label strong {
+    display: block !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    color: #1a1a2e !important;
+    margin-bottom: 3px !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle-label span {
+    font-size: 12.5px !important;
+    color: #7b7b9d !important;
+    line-height: 1.5 !important;
+}
+
+#smtp-fallback-page .smtpfb-toggle-label code {
+    background: #f0eeff !important;
+    color: #6C63FF !important;
+    padding: 1px 5px !important;
+    border-radius: 4px !important;
+    font-size: 12px !important;
+    border: none !important;
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 7px !important;
+    padding: 10px 22px !important;
+    border-radius: 10px !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    font-family: 'Inter', sans-serif !important;
+    cursor: pointer !important;
+    border: none !important;
+    transition: all .2s ease !important;
+    text-decoration: none !important;
+    line-height: 1 !important;
+    height: auto !important;
+    vertical-align: middle !important;
+}
+
+#smtp-fallback-page .smtpfb-btn-primary {
+    background: linear-gradient(135deg, #6C63FF, #9b59b6) !important;
+    color: #fff !important;
+    box-shadow: 0 4px 14px rgba(108,99,255,.35) !important;
+    border: none !important;
+}
+
+#smtp-fallback-page .smtpfb-btn-primary:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 22px rgba(108,99,255,.45) !important;
+    color: #fff !important;
+    background: linear-gradient(135deg, #5a52e0, #8e44ad) !important;
+}
+
+#smtp-fallback-page .smtpfb-btn-primary:disabled {
+    opacity: .6 !important;
+    cursor: not-allowed !important;
+    transform: none !important;
+}
+
+#smtp-fallback-page .smtpfb-btn-outline {
+    background: transparent !important;
+    color: #6C63FF !important;
+    border: 1.5px solid #6C63FF !important;
+    box-shadow: none !important;
+}
+
+#smtp-fallback-page .smtpfb-btn-outline:hover {
+    background: rgba(108,99,255,.07) !important;
+    transform: translateY(-1px) !important;
+    color: #6C63FF !important;
+}
+
+#smtp-fallback-page .smtpfb-btn-sm {
+    padding: 8px 16px !important;
+    font-size: 13px !important;
+}
+
+/* Override WP submit button */
+#smtp-fallback-page #submit,
+#smtp-fallback-page input[type="submit"].button-primary {
+    background: linear-gradient(135deg, #6C63FF, #9b59b6) !important;
+    border: none !important;
+    border-radius: 10px !important;
+    padding: 12px 32px !important;
+    height: auto !important;
+    font-size: 15px !important;
+    font-weight: 700 !important;
+    font-family: 'Inter', sans-serif !important;
+    box-shadow: 0 4px 16px rgba(108,99,255,.38) !important;
+    transition: all .2s ease !important;
+    cursor: pointer !important;
+    color: #fff !important;
+    line-height: 1 !important;
+    text-shadow: none !important;
+}
+
+#smtp-fallback-page #submit:hover,
+#smtp-fallback-page input[type="submit"].button-primary:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 10px 28px rgba(108,99,255,.48) !important;
+    background: linear-gradient(135deg, #5a52e0, #8e44ad) !important;
+}
+
+/* ============================================================
+   TEST ROW / RESULT BADGES
+   ============================================================ */
+#smtp-fallback-page .smtpfb-test-row {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    padding-top: 10px !important;
+    flex-wrap: wrap !important;
+}
+
+#smtp-fallback-page #primary-connection-result,
+#smtp-fallback-page #fallback-connection-result,
+#smtp-fallback-page #test-email-result,
+#smtp-fallback-page #dashboard-register-result {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    padding: 6px 14px !important;
+    border-radius: 100px !important;
+    transition: all .2s !important;
+    border: none !important;
+}
+
+#smtp-fallback-page .success {
+    background: #dcfce7 !important;
+    color: #15803d !important;
+    border: none !important;
+}
+#smtp-fallback-page .error {
+    background: #fee2e2 !important;
+    color: #dc2626 !important;
+    border: none !important;
+}
+#smtp-fallback-page .loading {
+    background: #ede9ff !important;
+    color: #6C63FF !important;
+    border: none !important;
+}
+
+/* ============================================================
+   INLINE INPUT + BUTTON ROW  (Test Email, etc.)
+   ============================================================ */
+
+#smtp-fallback-page .smtpfb-inline-row {
+    display: flex !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+    width: 100% !important;
+}
+
+#smtp-fallback-page .smtpfb-inline-row .smtpfb-input {
+    flex: 1 1 0% !important;
+    min-width: 0 !important;
+}
+
+#smtp-fallback-page .smtpfb-inline-row .smtpfb-btn {
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+    align-self: center !important;
+}
+
+/* ============================================================
+   LOADING SPINNER
+   ============================================================ */
+#smtp-fallback-page .loading-spinner {
+    display: inline-block !important;
+    width: 13px !important;
+    height: 13px !important;
+    border: 2px solid rgba(108,99,255,.25) !important;
+    border-top-color: #6C63FF !important;
+    border-radius: 50% !important;
+    animation: smtpfb-spin .7s linear infinite !important;
+    vertical-align: middle !important;
+    margin-right: 4px !important;
+}
+
+@keyframes smtpfb-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ============================================================
+   INFO BOX
+   ============================================================ */
+#smtp-fallback-page .smtpfb-info-box {
+    background: linear-gradient(135deg, #f6f4ff, #ede9ff) !important;
+    border: 1px solid #d4c5ff !important;
+    border-radius: 12px !important;
+    padding: 16px 20px !important;
+    margin-bottom: 22px !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 14px !important;
+}
+
+#smtp-fallback-page .smtpfb-info-box .info-icon {
+    font-size: 22px !important;
+    flex-shrink: 0 !important;
+    line-height: 1.4 !important;
+}
+
+#smtp-fallback-page .smtpfb-info-box p {
+    margin: 0 !important;
+    font-size: 14px !important;
+    color: #4c1d95 !important;
+    line-height: 1.6 !important;
+}
+
+#smtp-fallback-page .smtpfb-info-box p strong {
+    color: #4c1d95 !important;
+}
+
+/* ============================================================
+   CODE BLOCKS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-code {
+    display: block !important;
+    background: #f4f3ff !important;
+    border: 1px solid #e0dcff !important;
+    border-radius: 8px !important;
+    padding: 10px 14px !important;
+    font-family: 'Courier New', monospace !important;
+    font-size: 13px !important;
+    color: #5b21b6 !important;
+    word-break: break-all !important;
+    max-width: 100% !important;
+}
+
+/* ============================================================
+   DASH STATUS
+   ============================================================ */
+#smtp-fallback-page .smtpfb-dash-status {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    padding: 12px 18px !important;
+    border-radius: 10px !important;
+    margin-bottom: 18px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+}
+
+#smtp-fallback-page .smtpfb-dash-status.registered {
+    background: #dcfce7 !important;
+    color: #15803d !important;
+    border: 1px solid #bbf7d0 !important;
+}
+
+#smtp-fallback-page .smtpfb-dash-status.not-registered {
+    background: #fef3c7 !important;
+    color: #92400e !important;
+    border: 1px solid #fde68a !important;
+}
+
+/* ============================================================
+   DIVIDER
+   ============================================================ */
+#smtp-fallback-page .smtpfb-divider {
+    border: none !important;
+    border-top: 1px solid #ede9ff !important;
+    margin: 10px 0 18px !important;
+}
+
+/* ============================================================
+   NOTIFICATIONS (shown via JS)
+   ============================================================ */
+#smtp-fallback-page .smtp-notification {
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 10px !important;
+    padding: 13px 18px !important;
+    border-radius: 10px !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    margin: 12px 0 !important;
+    animation: smtpfb-slideDown .3s ease !important;
+    border-left: none !important;
+}
+
+@keyframes smtpfb-slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+#smtp-fallback-page .smtp-notification.success {
+    background: #dcfce7 !important;
+    color: #15803d !important;
+    border: 1px solid #bbf7d0 !important;
+}
+#smtp-fallback-page .smtp-notification.error {
+    background: #fee2e2 !important;
+    color: #dc2626 !important;
+    border: 1px solid #fecaca !important;
+}
+#smtp-fallback-page .smtp-notification.warning {
+    background: #fef3c7 !important;
+    color: #92400e !important;
+    border: 1px solid #fde68a !important;
+}
+#smtp-fallback-page .smtp-notification.info {
+    background: #dbeafe !important;
+    color: #1e40af !important;
+    border: 1px solid #bfdbfe !important;
+}
+
+/* ============================================================
+   SAVE BAR
+   ============================================================ */
+#smtp-fallback-page .smtpfb-save-bar {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 16px !important;
+    background: #fff !important;
+    border: 1px solid #e8e6ff !important;
+    border-radius: 16px !important;
+    padding: 20px 28px !important;
+    margin-top: 28px !important;
+    box-shadow: 0 4px 20px rgba(108,99,255,.08) !important;
+    flex-wrap: wrap !important;
+}
+
+#smtp-fallback-page .smtpfb-save-bar p {
+    margin: 0 !important;
+    font-size: 13px !important;
+    color: #7b7b9d !important;
+}
+
+/* ============================================================
+   TAB CONTENT
+   ============================================================ */
+#smtp-fallback-page .tab-content {
+    display: none !important;
+    animation: smtpfb-fadeUp .3s ease !important;
+}
+
+#smtp-fallback-page .tab-content.active {
+    display: block !important;
+}
+
+@keyframes smtpfb-fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 782px) {
+    #smtp-fallback-page .smtpfb-field-group,
+    #smtp-fallback-page .smtpfb-field-group.three {
+        grid-template-columns: 1fr !important;
+    }
+
+    #smtp-fallback-page .smtpfb-hero {
+        padding: 26px 20px !important;
+    }
+
+    #smtp-fallback-page .smtpfb-hero-title {
+        font-size: 22px !important;
+    }
+
+    #smtp-fallback-page .smtpfb-card {
+        padding: 20px 18px !important;
+    }
+
+    #smtp-fallback-page .smtpfb-tabs {
+        flex-wrap: wrap !important;
+    }
+
+    #smtp-fallback-page .smtpfb-save-bar {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+    }
+
+    #smtp-fallback-page .smtpfb-inline-row {
+        flex-direction: column !important;
+    }
+
+    #smtp-fallback-page .smtpfb-inline-row .smtpfb-btn {
+        width: 100% !important;
+        justify-content: center !important;
+    }
+}
