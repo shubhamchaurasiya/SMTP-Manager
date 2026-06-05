@@ -1357,16 +1357,31 @@ async function renderUpdates() {
       </div>
     </div>
 
-    <!-- How it works -->
+    <!-- Upload new version -->
     <div class="card" style="margin-bottom:24px">
-      <div class="card-header"><div class="card-title">🔄 How to Update Plugin Files</div></div>
+      <div class="card-header">
+        <div><div class="card-title">⬆️ Upload New Plugin Version</div>
+        <div class="card-subtitle">Paste updated file content here to store it in the dashboard</div></div>
+      </div>
       <div class="card-body">
-        <ol style="color:var(--text2);font-size:13px;line-height:2.2;padding-left:18px">
-          <li>Edit <code style="color:var(--accent)">smtp.php</code> or <code style="color:var(--accent)">smtp-agent.php</code> on your machine</li>
-          <li>Copy the updated files into <code style="color:var(--accent)">SMTP-Manager/plugin/</code> folder</li>
-          <li>Run <code style="color:var(--yellow)">git push origin main</code> — Vercel auto-redeploys in ~30 seconds</li>
-          <li>Come back here and click <strong style="color:var(--green)">Push to All Sites</strong></li>
-        </ol>
+        <div class="form-group">
+          <label class="form-label">File</label>
+          <select id="upload-filename" class="form-select" style="max-width:260px">
+            <option value="smtp.php">smtp.php  (main plugin)</option>
+            <option value="smtp-agent.php">smtp-agent.php  (agent)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Paste PHP File Content</label>
+          <textarea id="upload-content" class="form-textarea" style="min-height:120px;font-family:monospace;font-size:12px" placeholder="Paste the full content of the updated PHP file here (must start with &lt;?php)..."></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="uploadPluginFile()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+          Save to Dashboard
+        </button>
+        <p style="color:var(--text3);font-size:12px;margin-top:10px">
+          💡 After saving, click <strong>Push to All Sites</strong> above to deploy the update.
+        </p>
       </div>
     </div>
 
@@ -1388,22 +1403,7 @@ async function renderUpdates() {
   try {
     const info = await api.get('/updates/info');
     const versionEl = document.getElementById('version-info');
-    if (versionEl) {
-      versionEl.innerHTML = `
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          ${info.map(f => `
-            <div style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:10px">
-              <div style="font-size:12px;color:var(--text3);text-transform:uppercase;font-weight:700;margin-bottom:6px">${esc(f.filename)}</div>
-              ${f.found
-                ? `<div style="font-size:20px;font-weight:800;color:var(--text)">v${esc(f.version)}</div>
-                   <div style="font-size:12px;color:var(--text3);margin-top:4px">${(f.size/1024).toFixed(1)} KB</div>`
-                : `<div style="color:var(--red);font-size:13px">⚠️ File not found in dashboard/plugin/</div>`
-              }
-            </div>
-          `).join('')}
-        </div>
-      `;
-    }
+    if (versionEl) renderVersionInfo(versionEl, info);
   } catch(e) {
     const versionEl = document.getElementById('version-info');
     if (versionEl) versionEl.innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`;
@@ -1458,6 +1458,39 @@ async function loadUpdateSitesList() {
     const el = document.getElementById('update-sites-list');
     if (el) el.innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`;
   }
+}
+
+async function uploadPluginFile() {
+  const filename = document.getElementById('upload-filename')?.value;
+  const content  = document.getElementById('upload-content')?.value.trim();
+  if (!content) return toast('Please paste the file content first', 'error');
+  if (!content.startsWith('<?php')) return toast('Content must start with <?php', 'error');
+  try {
+    const r = await api.post('/updates/upload', { filename, content });
+    toast(`✅ ${filename} v${r.version} saved to dashboard (${(r.size/1024).toFixed(1)} KB)`, 'success', 6000);
+    document.getElementById('upload-content').value = '';
+    // Refresh version info
+    const info = await api.get('/updates/info');
+    const versionEl = document.getElementById('version-info');
+    if (versionEl) renderVersionInfo(versionEl, info);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function renderVersionInfo(el, info) {
+  if (!info.length) {
+    el.innerHTML = `<p style="color:var(--yellow)">⚠️ No plugin files uploaded yet. Paste file content above and click Save.</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      ${info.map(f => `
+        <div style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:10px">
+          <div style="font-size:12px;color:var(--text3);text-transform:uppercase;font-weight:700;margin-bottom:6px">${esc(f.filename)}</div>
+          <div style="font-size:20px;font-weight:800;color:var(--text)">v${esc(f.version)}</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:4px">${((f.size||0)/1024).toFixed(1)} KB · uploaded ${fmt(f.uploaded_at)}</div>
+        </div>
+      `).join('')}
+    </div>`;
 }
 
 function setUpdateStatus(siteId, html) {

@@ -42,7 +42,30 @@ async function initDB() {
     data       TEXT,
     updated_at INTEGER DEFAULT (strftime('%s','now'))
   )`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS plugin_files (
+    filename    TEXT PRIMARY KEY,
+    content     TEXT NOT NULL,
+    version     TEXT DEFAULT 'unknown',
+    uploaded_at INTEGER DEFAULT (strftime('%s','now'))
+  )`);
   try { await db.execute("ALTER TABLE sites ADD COLUMN smtp_enabled INTEGER DEFAULT 1"); } catch(_) {}
+
+  // Seed plugin files from disk into DB (runs on first deploy or when files are new)
+  const PLUGIN_DIR = path.join(__dirname, 'plugin');
+  for (const filename of ['smtp.php', 'smtp-agent.php']) {
+    const filePath = path.join(PLUGIN_DIR, filename);
+    if (fs.existsSync(filePath)) {
+      const content  = fs.readFileSync(filePath, 'utf8');
+      const verMatch = content.match(/Version:\s*([^\n\r*]+)/);
+      const version  = verMatch ? verMatch[1].trim() : 'unknown';
+      // Only seed if DB doesn't have it yet (don't overwrite manual uploads)
+      const existing = await db.execute({ sql: 'SELECT filename FROM plugin_files WHERE filename = ?', args: [filename] });
+      if (existing.rows.length === 0) {
+        await db.execute({ sql: 'INSERT INTO plugin_files (filename, content, version) VALUES (?, ?, ?)', args: [filename, content, version] });
+        console.log(`[PLUGIN] Seeded ${filename} v${version} into DB`);
+      }
+    }
+  }
 }
 
 // Lazy init — runs once per cold start, resets on failure so next request retries
@@ -348,44 +371,49 @@ app.post('/api/settings', async (req, res) => {
   res.json({ success: true });
 });
 
-// ─── Plugin Update Push ───────────────────────────────────────────────────────
-const PLUGIN_DIR = path.join(__dirname, 'plugin');
-
-app.get('/api/updates/info', (req, res) => {
-  const filenames = ['smtp.php', 'smtp-agent.php'];
-  const info = filenames.map(filename => {
-    const filePath = path.join(PLUGIN_DIR, filename);
-    if (!fs.existsSync(filePath)) return { filename, found: false };
-    const content  = fs.readFileSync(filePath, 'utf8');
-    const verMatch = content.match(/Version:\s*([^\n\r*]+)/);
-    const version  = verMatch ? verMatch[1].trim() : 'unknown';
-    return { filename, version, size: content.length, found: true };
-  });
-  res.json(info);
+// ─── Plugin Update Push (files stored in Turso DB — works reliably in serverless) ─
+app.get('/api/updates/info', async (req, res) => {
+  const rows = await dbAll('SELECT filename, version, uploaded_at, length(content) AS size FROM plugin_files');
+  res.json(rows.map(r => ({ ...r, found: true })));
 });
 
-app.post('/api/updates/push/:id', wrap(async (req, res) => {
-  const site = await getSite(req.params.id);
+// Upload / replace a plugin file in DB
+app.post('/api/updates/upload', async (req, res) => {
+  const { filename, content } = req.body;
+  const allowed = ['smtp.php', 'smtp-agent.php'];
+  if (!allowed.includes(filename)) return res.status(400).json({ error: 'Filename not allowed' });
+  if (!content || !content.includes('<?php')) return res.status(400).json({ error: 'Invalid PHP content' });
+  const verMatch = content.match(/Version:\s*([^\n\r*]+)/);
+  const version  = verMatch ? verMatch[1].trim() : 'unknown';
+  await dbRun('INSERT OR REPLACE INTO plugin_files (filename, content, version, uploaded_at) VALUES (?, ?, ?, ?)',
+    [filename, content, version, now()]);
+  res.json({ success: true, filename, version, size: content.length });
+});
+
+// Helper: load all plugin files from DB as { filename: content }
+async function loadPluginFiles() {
+  const rows = await dbAll('SELECT filename, content FROM plugin_files');
+  if (!rows.length) throw { status: 400, message: 'No plugin files in DB. Upload them first from the Push Updates page.' };
   const files = {};
-  for (const filename of ['smtp.php', 'smtp-agent.php']) {
-    const filePath = path.join(PLUGIN_DIR, filename);
-    if (fs.existsSync(filePath)) files[filename] = fs.readFileSync(filePath, 'utf8');
-  }
-  if (!Object.keys(files).length)
-    return res.status(400).json({ error: 'No plugin files found in dashboard/plugin/' });
-  const data = await callAgent(site, 'push_update', 'POST', { files });
+  rows.forEach(r => { files[r.filename] = r.content; });
+  return files;
+}
+
+// Push to a single site
+app.post('/api/updates/push/:id', wrap(async (req, res) => {
+  const site  = await getSite(req.params.id);
+  const files = await loadPluginFiles();
+  const data  = await callAgent(site, 'push_update', 'POST', { files });
   res.json({ id: site.id, name: site.name, url: site.url, ...data });
 }));
 
+// Push to ALL sites
 app.post('/api/updates/push-all', async (req, res) => {
   const sites = await dbAll('SELECT * FROM sites');
-  const files = {};
-  for (const filename of ['smtp.php', 'smtp-agent.php']) {
-    const filePath = path.join(PLUGIN_DIR, filename);
-    if (fs.existsSync(filePath)) files[filename] = fs.readFileSync(filePath, 'utf8');
-  }
-  if (!Object.keys(files).length)
-    return res.status(400).json({ error: 'No plugin files found in dashboard/plugin/' });
+  let files;
+  try { files = await loadPluginFiles(); }
+  catch(e) { return res.status(400).json({ error: e.message }); }
+
   const results = [];
   for (const site of sites) {
     try {
