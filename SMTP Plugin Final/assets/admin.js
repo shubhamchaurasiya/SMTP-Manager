@@ -616,3 +616,103 @@
         }
     };
 })(jQuery);
+
+/* ===== Per-server mailer picker: API / SMTP connection tabs ===== */
+jQuery(document).ready(function () {
+    if (!document.querySelector('.smtpfb-conn-nav')) { return; }
+
+    var MAILERS = window.smtpFallbackMailers || {};
+
+    function apiPane(prefix) {
+        return document.querySelector('.smtpfb-conn-api[data-prefix="' + prefix + '"]');
+    }
+
+    function currentMailer(prefix) {
+        var checked = document.querySelector('input[name="smtp_fallback_options[' + prefix + '_mailer]"]:checked');
+        return checked ? checked.value : 'other';
+    }
+
+    function refresh(prefix) {
+        var pane = apiPane(prefix);
+        if (!pane) { return; }
+        var slug = currentMailer(prefix);
+        var cfg = MAILERS[slug] || { api: false, fields: {}, key_url: '', label: slug };
+        var fields = cfg.fields || {};
+
+        pane.querySelectorAll('.smtpfb-mailer-tile').forEach(function (t) {
+            t.classList.toggle('is-checked', t.getAttribute('data-tile') === slug);
+        });
+        pane.querySelectorAll('.smtpfb-provider-block').forEach(function (b) {
+            b.style.display = (b.getAttribute('data-provider') === slug) ? '' : 'none';
+        });
+        ['api_domain', 'api_secret'].forEach(function (key) {
+            var wrap = pane.querySelector('[data-field="' + key + '"]');
+            if (!wrap) { return; }
+            var show = Object.prototype.hasOwnProperty.call(fields, key);
+            wrap.style.display = show ? '' : 'none';
+            if (show && key === 'api_domain') {
+                var lbl = wrap.querySelector('.smtpfb-api-domain-label');
+                if (lbl) { lbl.textContent = fields[key]; }
+            }
+        });
+        var regionWrap = pane.querySelector('[data-field="api_region"]');
+        if (regionWrap) {
+            regionWrap.style.display = (slug === 'mailgun' || slug === 'sparkpost') ? '' : 'none';
+        }
+        var warn = pane.querySelector('.smtpfb-api-unsupported');
+        if (warn) { warn.style.display = cfg.api ? 'none' : ''; }
+        var hint = pane.querySelector('.smtpfb-api-key-hint');
+        if (hint) {
+            hint.innerHTML = cfg.key_url
+                ? 'Follow this link to get an API Key from ' + cfg.label + ': <a href="' + cfg.key_url + '" target="_blank" rel="noopener noreferrer">Get API Key</a>'
+                : 'Paste the API key generated in your mailer\'s dashboard.';
+        }
+    }
+
+    function setMode(prefix, mode) {
+        var input = document.querySelector('input.smtpfb-conn-mode[name="smtp_fallback_options[' + prefix + '_mode]"]');
+        if (input) { input.value = mode; }
+        var nav = document.querySelector('.smtpfb-conn-nav[data-prefix="' + prefix + '"]');
+        if (nav) {
+            nav.querySelectorAll('.smtpfb-subtab').forEach(function (b) {
+                b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+            });
+        }
+        document.querySelectorAll('.smtpfb-conn-pane[data-prefix="' + prefix + '"]').forEach(function (p) {
+            p.classList.toggle('active', p.classList.contains('smtpfb-conn-' + mode));
+        });
+    }
+
+    document.querySelectorAll('.smtpfb-conn-nav').forEach(function (nav) {
+        var prefix = nav.getAttribute('data-prefix');
+        nav.querySelectorAll('.smtpfb-subtab').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                setMode(prefix, btn.getAttribute('data-mode'));
+            });
+        });
+    });
+
+    document.querySelectorAll('.smtpfb-conn-api input[type="radio"]').forEach(function (radio) {
+        radio.addEventListener('change', function () {
+            var pane = radio.closest('.smtpfb-conn-api');
+            if (pane) { refresh(pane.getAttribute('data-prefix')); }
+        });
+    });
+
+    /* "Remove API Key" — clear the saved key and let the user type a new one */
+    document.querySelectorAll('.smtpfb-remove-key').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var pane = btn.closest('.smtpfb-conn-api');
+            var input = pane ? pane.querySelector('.smtpfb-api-key-input') : null;
+            if (input) {
+                input.value = '';
+                input.removeAttribute('readonly');
+                input.focus();
+            }
+            btn.style.display = 'none';
+        });
+    });
+
+    refresh('primary');
+    refresh('fallback');
+});

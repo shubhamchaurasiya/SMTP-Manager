@@ -71,6 +71,7 @@ class SMTP_Fallback_Plugin {
         // AJAX handlers
         add_action('wp_ajax_smtp_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_smtp_send_test_email', array($this, 'ajax_send_test_email'));
+        add_action('wp_ajax_smtp_test_api', array($this, 'ajax_test_api'));
         add_action('wp_ajax_smtp_register_dashboard', array($this, 'ajax_register_with_dashboard'));
         
         
@@ -186,6 +187,15 @@ class SMTP_Fallback_Plugin {
         
         
         $this->log("Starting email send with fallback mechanism to: " . (is_array($to) ? implode(', ', $to) : $to));
+
+        // Primary server in API mode: try the provider API first
+        if ($this->is_api_mode('primary')) {
+            $this->log('Primary is in API mode, attempting delivery via ' . $this->options['primary_mailer'] . ' API');
+            if ($this->send_via_api('primary', $to, $subject, $message, $headers, $attachments)) {
+                return true;
+            }
+            $this->log('Primary API delivery failed, moving to fallback');
+        }
         
         // Try primary server first
         $this->log('Attempting to send via primary SMTP server');
@@ -207,6 +217,15 @@ class SMTP_Fallback_Plugin {
         $this->log('Primary SMTP failed or invalid, checking fallback server configuration');
         
         // Try fallback server
+        // Fallback server in API mode: try the provider API
+        if ($this->is_api_mode('fallback')) {
+            $this->log('Fallback is in API mode, attempting delivery via ' . $this->options['fallback_mailer'] . ' API');
+            if ($this->send_via_api('fallback', $to, $subject, $message, $headers, $attachments)) {
+                return true;
+            }
+            $this->log('Fallback API delivery failed');
+        }
+
         $fallback_has_config = $this->has_fallback_config();
         $this->log("Fallback server configuration check: " . ($fallback_has_config ? 'AVAILABLE' : 'NOT AVAILABLE'));
         
@@ -257,6 +276,16 @@ class SMTP_Fallback_Plugin {
         $this->log('Using synchronous sending for Contact Form 7 (ultra-fast mode: 5s retry, 1 attempt)');
         $this->log("CF7 email to: " . (is_array($to) ? implode(', ', $to) : $to));
         
+        // Primary server in API mode: try the provider API first
+        if ($this->is_api_mode('primary')) {
+            $this->log('CF7: Primary is in API mode, attempting delivery via ' . $this->options['primary_mailer'] . ' API');
+            if ($this->send_via_api('primary', $to, $subject, $message, $headers, $attachments)) {
+                $this->restore_retry_settings($original_retry_interval, $original_max_retries);
+                return true;
+            }
+            $this->log('CF7: Primary API delivery failed, moving to fallback');
+        }
+
         // Try primary server first with fast timeout
         $this->log('CF7: Attempting primary SMTP server');
         $primary_config_valid = $this->validate_server_config('primary');
@@ -278,6 +307,16 @@ class SMTP_Fallback_Plugin {
         $this->log('Primary SMTP failed for CF7, checking fallback server');
         
         // Try fallback server with fast timeout
+        // Fallback server in API mode: try the provider API
+        if ($this->is_api_mode('fallback')) {
+            $this->log('CF7: Fallback is in API mode, attempting delivery via ' . $this->options['fallback_mailer'] . ' API');
+            if ($this->send_via_api('fallback', $to, $subject, $message, $headers, $attachments)) {
+                $this->restore_retry_settings($original_retry_interval, $original_max_retries);
+                return true;
+            }
+            $this->log('CF7: Fallback API delivery failed');
+        }
+
         $fallback_has_config = $this->has_fallback_config();
         $this->log("CF7: Fallback server configuration check: " . ($fallback_has_config ? 'AVAILABLE' : 'NOT AVAILABLE'));
         
@@ -1116,6 +1155,22 @@ class SMTP_Fallback_Plugin {
         return array(
             // SMTP status
             'plugin_enabled' => true,
+
+            // Per-server mailer / API settings
+            'primary_mode' => 'smtp',
+            'primary_mailer' => 'other',
+            'primary_api_key' => '',
+            'primary_api_secret' => '',
+            'primary_api_domain' => '',
+            'primary_api_region' => 'us',
+            'primary_api_sender_name' => get_option('blogname'),
+            'fallback_mode' => 'smtp',
+            'fallback_mailer' => 'other',
+            'fallback_api_key' => '',
+            'fallback_api_secret' => '',
+            'fallback_api_domain' => '',
+            'fallback_api_region' => 'us',
+            'fallback_api_sender_name' => get_option('blogname'),
             
             // Email identity
             'from_email' => get_option('admin_email'),
@@ -1169,11 +1224,729 @@ class SMTP_Fallback_Plugin {
     }
     
     /**
+     * Supported mailers.
+     *
+     * 'api'         => true means the mailer can send over an HTTP API using an API key.
+     * 'fields'      => extra credential fields the mailer needs beyond the API key.
+     * 'recommended' => shows the orange RECOMMENDED ribbon on the tile.
+     * 'desc'        => intro copy shown in the provider panel below the grid.
+     * 'key_url'     => where the user generates their API key.
+     */
+    public function get_mailers() {
+        return array(
+            'other' => array(
+                'label' => 'Default (none)', 'logo' => 'php', 'logo_class' => 'lg-php', 'api' => false,
+                'fields' => array(), 'doc' => '', 'key_url' => '',
+                'desc' => 'Emails are sent using your own SMTP servers configured in the SMTP Settings tab. No API key required.',
+            ),
+            'sendlayer' => array(
+                'label' => 'SendLayer', 'logo' => 'SendLayer', 'logo_class' => 'lg-sendlayer', 'api' => true, 'recommended' => true,
+                'fields' => array(), 'doc' => 'https://sendlayer.com/', 'key_url' => 'https://app.sendlayer.com/settings/api/',
+                'desc' => 'SendLayer is a reliable transactional email service built for WordPress. It offers high deliverability with a simple API and detailed delivery logs.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.sendlayer.com/settings/api/', 'link_text' => 'Get API Key', 'hint' => 'Follow this link to get an API Key from SendLayer:')
+                ),
+            ),
+            'smtpcom' => array(
+                'label' => 'SMTP.com', 'logo' => 'SMTP', 'logo_class' => 'lg-smtpcom', 'api' => true, 'recommended' => true,
+                'fields' => array('api_domain' => 'Sender Name (channel)'), 'doc' => 'https://www.smtp.com/', 'key_url' => 'https://my.smtp.com/settings/api',
+                'desc' => 'SMTP.com is one of our recommended mailers. It is a transactional email provider currently used by 100,000+ businesses and has been offering email services for more than 20 years. A free 30-day trial lets you send up to 50,000 emails.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://my.smtp.com/account?tab=manage_api_keys', 'link_text' => 'Get API Key', 'hint' => 'Follow this link to get an API Key from SMTP.com:'),
+                    array('store' => 'api_domain', 'label' => 'Sender Name (channel)', 'type' => 'text', 'required' => true, 'link' => 'https://my.smtp.com/account?tab=manage_channels', 'link_text' => 'Get Sender Name', 'hint' => 'Follow this link to get a Sender Name from SMTP.com:')
+                ),
+            ),
+            'brevo' => array(
+                'label' => 'Brevo', 'logo' => 'Brevo', 'logo_class' => 'lg-brevo', 'api' => true, 'recommended' => true,
+                'fields' => array(), 'doc' => 'https://www.brevo.com/', 'key_url' => 'https://app.brevo.com/settings/keys/api',
+                'desc' => 'Brevo (formerly Sendinblue) is a trusted transactional email provider with a generous free tier of 300 emails per day.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.brevo.com/settings/keys/api', 'link_text' => 'Get v3 API Key', 'hint' => 'Follow this link to get an API Key:'),
+                    array('store' => 'api_domain', 'label' => 'Sending Domain', 'type' => 'text', 'required' => false, 'link' => '', 'link_text' => '', 'hint' => 'Optional. The sending domain/subdomain you configured in your Brevo dashboard.')
+                ),
+            ),
+            'ses' => array(
+                'label' => 'Amazon SES', 'logo' => 'aws', 'logo_class' => 'lg-aws', 'api' => false,
+                'fields' => array(), 'doc' => 'https://aws.amazon.com/ses/', 'key_url' => '',
+                'desc' => 'Amazon SES offers the lowest cost per email at scale, but requires AWS credentials. Configure it as an SMTP server in the SMTP Settings tab.',
+            ),
+            'elastic' => array(
+                'label' => 'Elastic Email', 'logo' => 'Elastic Email', 'logo_class' => 'lg-elastic', 'api' => true,
+                'fields' => array(), 'doc' => 'https://elasticemail.com/', 'key_url' => 'https://elasticemail.com/account#/settings/new/manage-api',
+                'desc' => 'Elastic Email is a low-cost email delivery platform with a straightforward HTTP API.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.elasticemail.com/api/settings/manage-api', 'link_text' => 'Get API Key', 'hint' => 'Follow this link to get an API Key from Elastic Email:')
+                ),
+            ),
+            'gmail' => array(
+                'label' => 'Google / Gmail', 'logo' => 'Google', 'logo_class' => 'lg-google', 'api' => false,
+                'fields' => array(), 'doc' => 'https://mail.google.com/', 'key_url' => '',
+                'desc' => 'Send through your Gmail or Google Workspace account. Use an app password with smtp.gmail.com in the SMTP Settings tab.',
+            ),
+            'mailgun' => array(
+                'label' => 'Mailgun', 'logo' => 'Mailgun', 'logo_class' => 'lg-mailgun', 'api' => true,
+                'fields' => array('api_domain' => 'Sending Domain'), 'doc' => 'https://www.mailgun.com/', 'key_url' => 'https://app.mailgun.com/settings/api_security',
+                'desc' => 'Mailgun is a developer-focused email service with powerful routing and analytics. You will need both an API key and your verified sending domain.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'Mailgun API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.mailgun.com/settings/api_security', 'link_text' => 'Get a Mailgun API Key', 'hint' => 'Generate a key in the "Mailgun API Keys" section:'),
+                    array('store' => 'api_domain', 'label' => 'Domain Name', 'type' => 'text', 'required' => true, 'link' => 'https://app.mailgun.com/mg/sending/domains', 'link_text' => 'Get a Domain Name', 'hint' => 'Follow this link to get a Domain Name from Mailgun:'),
+                    array('store' => 'api_region', 'label' => 'Region', 'type' => 'region', 'required' => false, 'link' => '', 'link_text' => '', 'hint' => 'Select which regional endpoint to use. EU accounts must pick EU.')
+                ),
+            ),
+            'mailjet' => array(
+                'label' => 'Mailjet', 'logo' => 'Mailjet', 'logo_class' => 'lg-mailjet', 'api' => true,
+                'fields' => array('api_secret' => 'API Secret Key'), 'doc' => 'https://www.mailjet.com/', 'key_url' => 'https://app.mailjet.com/account/apikeys',
+                'desc' => 'Mailjet provides transactional and marketing email from one dashboard. It issues an API key together with a secret key — both are required.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.mailjet.com/account/apikeys', 'link_text' => 'API Key Management', 'hint' => 'Follow this link to get the API key from Mailjet:'),
+                    array('store' => 'api_secret', 'label' => 'Secret Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.mailjet.com/account/apikeys', 'link_text' => 'API Key Management', 'hint' => '')
+                ),
+            ),
+            'mailersend' => array(
+                'label' => 'MailerSend', 'logo' => 'mailersend', 'logo_class' => 'lg-mailersend', 'api' => true,
+                'fields' => array(), 'doc' => 'https://www.mailersend.com/', 'key_url' => 'https://app.mailersend.com/api-tokens',
+                'desc' => 'MailerSend is a transactional email service from the makers of MailerLite, with a free tier of 3,000 emails per month.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.mailersend.com/api-tokens', 'link_text' => 'Get API Key', 'hint' => 'Follow this link to get an API Key from MailerSend:')
+                ),
+            ),
+            'mandrill' => array(
+                'label' => 'Mandrill', 'logo' => 'M', 'logo_class' => 'lg-mandrill', 'api' => true,
+                'fields' => array(), 'doc' => 'https://mailchimp.com/features/transactional-email/', 'key_url' => 'https://mandrillapp.com/settings',
+                'desc' => 'Mandrill is the transactional email add-on for Mailchimp. It requires a paid Mailchimp account with transactional blocks.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://mandrillapp.com/settings/index/', 'link_text' => 'Get API Key', 'hint' => 'Follow this link to get an API Key from Mandrill:')
+                ),
+            ),
+            'outlook' => array(
+                'label' => '365 / Outlook', 'logo' => 'Outlook', 'logo_class' => 'lg-outlook', 'api' => false,
+                'fields' => array(), 'doc' => 'https://outlook.com/', 'key_url' => '',
+                'desc' => 'Send through Microsoft 365 or Outlook.com. Configure smtp.office365.com in the SMTP Settings tab.',
+            ),
+            'postmark' => array(
+                'label' => 'Postmark', 'logo' => 'Postmark', 'logo_class' => 'lg-postmark', 'api' => true,
+                'fields' => array(), 'doc' => 'https://postmarkapp.com/', 'key_url' => 'https://account.postmarkapp.com/servers',
+                'desc' => 'Postmark is known for exceptionally fast delivery of transactional email and keeps broadcast mail on a separate stream.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'Server API Token', 'type' => 'password', 'required' => true, 'link' => 'https://account.postmarkapp.com/api_tokens', 'link_text' => 'Get Server API Token', 'hint' => 'Follow this link to get a Server API Token from Postmark:'),
+                    array('store' => 'api_domain', 'label' => 'Message Stream ID', 'type' => 'text', 'required' => false, 'link' => '', 'link_text' => '', 'hint' => 'Optional. By default outbound (Default Transactional Stream) will be used.')
+                ),
+            ),
+            'resend' => array(
+                'label' => 'Resend', 'logo' => 'Resend', 'logo_class' => 'lg-resend', 'api' => true,
+                'fields' => array(), 'doc' => 'https://resend.com/', 'key_url' => 'https://resend.com/api-keys',
+                'desc' => 'Resend is a modern email API for developers with a clean dashboard and a free tier of 3,000 emails per month.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://resend.com/api-keys', 'link_text' => 'API Keys', 'hint' => 'Follow this link to get the API key from Resend:')
+                ),
+            ),
+            'sendgrid' => array(
+                'label' => 'SendGrid', 'logo' => 'SendGrid', 'logo_class' => 'lg-sendgrid', 'api' => true,
+                'fields' => array(), 'doc' => 'https://sendgrid.com/', 'key_url' => 'https://app.sendgrid.com/settings/api_keys',
+                'desc' => 'SendGrid is one of the largest email delivery providers, offering a free plan of 100 emails per day.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.sendgrid.com/settings/api_keys', 'link_text' => 'Create API Key', 'hint' => 'A Mail Send access level is all this key needs:')
+                ),
+            ),
+            'smtp2go' => array(
+                'label' => 'SMTP2GO', 'logo' => 'SMTP2GO', 'logo_class' => 'lg-smtp2go', 'api' => true,
+                'fields' => array(), 'doc' => 'https://www.smtp2go.com/', 'key_url' => 'https://app.smtp2go.com/settings/apikeys',
+                'desc' => 'SMTP2GO offers global delivery infrastructure with real-time reporting and a free plan of 1,000 emails per month.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.smtp2go.com/settings/apikeys', 'link_text' => 'Get API Key', 'hint' => 'Generate an API key on the Sending -> API Keys page in your control panel:')
+                ),
+            ),
+            'sparkpost' => array(
+                'label' => 'SparkPost', 'logo' => 'SPARKPOST', 'logo_class' => 'lg-sparkpost', 'api' => true,
+                'fields' => array(), 'doc' => 'https://www.sparkpost.com/', 'key_url' => 'https://app.sparkpost.com/account/api-keys',
+                'desc' => 'SparkPost delivers a large share of the world\'s commercial email and offers both US and EU regions.',
+                'opts' => array(
+                    array('store' => 'api_key', 'label' => 'API Key', 'type' => 'password', 'required' => true, 'link' => 'https://app.sparkpost.com/account/api-keys', 'link_text' => 'Get API Key', 'hint' => 'Follow this link to get an API Key from SparkPost:'),
+                    array('store' => 'api_region', 'label' => 'Region', 'type' => 'region', 'required' => false, 'link' => '', 'link_text' => '', 'hint' => 'Select which regional endpoint to use. EU accounts must pick EU.')
+                ),
+            ),
+            'zoho' => array(
+                'label' => 'Zoho Mail', 'logo' => 'ZOHO', 'logo_class' => 'lg-zoho', 'api' => false,
+                'fields' => array(), 'doc' => 'https://www.zoho.com/mail/', 'key_url' => '',
+                'desc' => 'Zoho Mail offers free custom-domain email hosting. Configure smtp.zoho.com in the SMTP Settings tab.',
+            ),
+        );
+    }
+
+    /**
+     * True when the user chose API mode with a usable API-capable mailer + key.
+     */
+    private function is_api_mode($prefix) {
+        if (($this->options[$prefix . '_mode'] ?? 'smtp') !== 'api') {
+            return false;
+        }
+        $mailers = $this->get_mailers();
+        $creds   = $this->get_api_credentials($prefix);
+        return !empty($mailers[$creds['mailer']]['api']) && $creds['key'] !== '';
+    }
+
+    /**
+     * Resolve the selected mailer's API credentials for one server.
+     * Reads the per-mailer namespaced options ({prefix}_{mailer}_{field})
+     * and falls back to the legacy shared fields ({prefix}_{field}).
+     */
+    private function get_api_credentials($prefix) {
+        $mailer = $this->options[$prefix . '_mailer'] ?? 'other';
+        $read = function ($suffix) use ($prefix, $mailer) {
+            $v = $this->options[$prefix . '_' . $mailer . '_' . $suffix] ?? '';
+            if ($v === '') {
+                $v = $this->options[$prefix . '_' . $suffix] ?? '';
+            }
+            return $v;
+        };
+        $region = $read('api_region');
+        return array(
+            'mailer' => $mailer,
+            'key'    => $read('api_key'),
+            'secret' => $read('api_secret'),
+            'domain' => $read('api_domain'),
+            'region' => in_array($region, array('us', 'eu'), true) ? $region : 'us',
+        );
+    }
+
+    /**
+     * Send an email through the selected provider's HTTP API.
+     * Returns true on success. Falls through to SMTP on failure.
+     */
+    private function send_via_api($prefix, $to, $subject, $message, $headers = '', $attachments = array()) {
+        $creds   = $this->get_api_credentials($prefix);
+        $mailer  = $creds['mailer'];
+        $key     = $creds['key'];
+        $secret  = $creds['secret'];
+        $domain  = $creds['domain'];
+        $region  = $creds['region'];
+        $from    = $this->get_from_email();
+        $name    = !empty($this->options[$prefix . '_api_sender_name']) ? $this->options[$prefix . '_api_sender_name'] : $this->get_from_name();
+        $to_list = is_array($to) ? $to : array_map('trim', explode(',', $to));
+        $to_list = array_values(array_filter($to_list, 'is_email'));
+        $is_html = $this->is_html_message($message, $headers);
+
+        if (empty($to_list)) {
+            $this->log('API send aborted - no valid recipients');
+            return false;
+        }
+        if (!empty($attachments)) {
+            $this->log('API send skipped - attachments are only supported over SMTP');
+            return false;
+        }
+
+        $url = '';
+        $args = array('timeout' => 20, 'headers' => array('Content-Type' => 'application/json'));
+        $body = array();
+
+        switch ($mailer) {
+            case 'sendgrid':
+                $url = 'https://api.sendgrid.com/v3/mail/send';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                $body = array(
+                    'personalizations' => array(array('to' => array_map(function ($e) { return array('email' => $e); }, $to_list))),
+                    'from'    => array('email' => $from, 'name' => $name),
+                    'subject' => $subject,
+                    'content' => array(array('type' => $is_html ? 'text/html' : 'text/plain', 'value' => $message)),
+                );
+                break;
+
+            case 'brevo':
+                $url = 'https://api.brevo.com/v3/smtp/email';
+                $args['headers']['api-key'] = $key;
+                $body = array(
+                    'sender'  => array('email' => $from, 'name' => $name),
+                    'to'      => array_map(function ($e) { return array('email' => $e); }, $to_list),
+                    'subject' => $subject,
+                );
+                $body[$is_html ? 'htmlContent' : 'textContent'] = $message;
+                break;
+
+            case 'postmark':
+                $url = 'https://api.postmarkapp.com/email';
+                $args['headers']['X-Postmark-Server-Token'] = $key;
+                $args['headers']['Accept'] = 'application/json';
+                $body = array(
+                    'From'    => $name ? sprintf('%s <%s>', $name, $from) : $from,
+                    'To'      => implode(',', $to_list),
+                    'Subject' => $subject,
+                );
+                $body[$is_html ? 'HtmlBody' : 'TextBody'] = $message;
+                if (!empty($domain)) {
+                    $body['MessageStream'] = $domain; // optional Message Stream ID
+                }
+                break;
+
+            case 'resend':
+                $url = 'https://api.resend.com/emails';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                $body = array(
+                    'from'    => $name ? sprintf('%s <%s>', $name, $from) : $from,
+                    'to'      => $to_list,
+                    'subject' => $subject,
+                );
+                $body[$is_html ? 'html' : 'text'] = $message;
+                break;
+
+            case 'mailersend':
+                $url = 'https://api.mailersend.com/v1/email';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                $body = array(
+                    'from'    => array('email' => $from, 'name' => $name),
+                    'to'      => array_map(function ($e) { return array('email' => $e); }, $to_list),
+                    'subject' => $subject,
+                );
+                $body[$is_html ? 'html' : 'text'] = $message;
+                break;
+
+            case 'sparkpost':
+                $url = $region === 'eu'
+                    ? 'https://api.eu.sparkpost.com/api/v1/transmissions'
+                    : 'https://api.sparkpost.com/api/v1/transmissions';
+                $args['headers']['Authorization'] = $key;
+                $content = array('from' => array('email' => $from, 'name' => $name), 'subject' => $subject);
+                $content[$is_html ? 'html' : 'text'] = $message;
+                $body = array(
+                    'recipients' => array_map(function ($e) { return array('address' => array('email' => $e)); }, $to_list),
+                    'content'    => $content,
+                );
+                break;
+
+            case 'smtp2go':
+                $url = 'https://api.smtp2go.com/v3/email/send';
+                $args['headers']['X-Smtp2go-Api-Key'] = $key;
+                $body = array(
+                    'sender'    => $name ? sprintf('%s <%s>', $name, $from) : $from,
+                    'to'        => $to_list,
+                    'subject'   => $subject,
+                );
+                $body[$is_html ? 'html_body' : 'text_body'] = $message;
+                break;
+
+            case 'smtpcom':
+                $url = 'https://api.smtp.com/v4/messages?api_key=' . rawurlencode($key);
+                $body = array(
+                    'channel'    => $domain,
+                    'recipients' => array('to' => array_map(function ($e) { return array('address' => $e); }, $to_list)),
+                    'originator' => array('from' => array('address' => $from, 'name' => $name)),
+                    'subject'    => $subject,
+                    'body'       => array('parts' => array(array('type' => $is_html ? 'text/html' : 'text/plain', 'content' => $message))),
+                );
+                break;
+
+            case 'sendlayer':
+                $url = 'https://console.sendlayer.com/api/v1/email';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                $body = array(
+                    'From'        => array('email' => $from, 'name' => $name),
+                    'To'          => array_map(function ($e) { return array('email' => $e); }, $to_list),
+                    'Subject'     => $subject,
+                    'ContentType' => $is_html ? 'HTML' : 'Text',
+                );
+                $body[$is_html ? 'HTMLContent' : 'PlainContent'] = $message;
+                break;
+
+            case 'mandrill':
+                $url = 'https://mandrillapp.com/api/1.0/messages/send.json';
+                $msg = array(
+                    'subject'    => $subject,
+                    'from_email' => $from,
+                    'from_name'  => $name,
+                    'to'         => array_map(function ($e) { return array('email' => $e, 'type' => 'to'); }, $to_list),
+                );
+                $msg[$is_html ? 'html' : 'text'] = $message;
+                $body = array('key' => $key, 'message' => $msg);
+                break;
+
+            case 'elastic':
+                $url = 'https://api.elasticemail.com/v4/emails';
+                $args['headers']['X-ElasticEmail-ApiKey'] = $key;
+                $body = array(
+                    'Recipients' => array_map(function ($e) { return array('Email' => $e); }, $to_list),
+                    'Content'    => array(
+                        'From'    => $name ? sprintf('%s <%s>', $name, $from) : $from,
+                        'Subject' => $subject,
+                        'Body'    => array(array(
+                            'ContentType' => $is_html ? 'HTML' : 'PlainText',
+                            'Content'     => $message,
+                        )),
+                    ),
+                );
+                break;
+
+            case 'mailgun':
+                if (empty($domain)) {
+                    $this->log('Mailgun API send aborted - sending domain is empty');
+                    return false;
+                }
+                $base = $region === 'eu' ? 'https://api.eu.mailgun.net' : 'https://api.mailgun.net';
+                $url  = $base . '/v3/' . rawurlencode($domain) . '/messages';
+                $args['headers'] = array(
+                    'Authorization' => 'Basic ' . base64_encode('api:' . $key),
+                    'Content-Type'  => 'application/x-www-form-urlencoded',
+                );
+                $form = array(
+                    'from'    => $name ? sprintf('%s <%s>', $name, $from) : $from,
+                    'to'      => implode(',', $to_list),
+                    'subject' => $subject,
+                );
+                $form[$is_html ? 'html' : 'text'] = $message;
+                $args['body'] = $form;
+                break;
+
+            case 'mailjet':
+                $url = 'https://api.mailjet.com/v3.1/send';
+                $args['headers']['Authorization'] = 'Basic ' . base64_encode($key . ':' . $secret);
+                $msg = array(
+                    'From'    => array('Email' => $from, 'Name' => $name),
+                    'To'      => array_map(function ($e) { return array('Email' => $e); }, $to_list),
+                    'Subject' => $subject,
+                );
+                $msg[$is_html ? 'HTMLPart' : 'TextPart'] = $message;
+                $body = array('Messages' => array($msg));
+                break;
+
+            default:
+                $this->log("Mailer '{$mailer}' has no API transport");
+                return false;
+        }
+
+        if (!isset($args['body'])) {
+            $args['body'] = wp_json_encode($body);
+        }
+
+        $response = wp_remote_post($url, $args);
+
+        if (is_wp_error($response)) {
+            $this->log("API send failed ({$mailer}): " . $response->get_error_message());
+            return false;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code >= 200 && $code < 300) {
+            $this->log("Email sent successfully via {$mailer} API (HTTP {$code})");
+            return true;
+        }
+
+        $this->log("API send failed ({$mailer}) HTTP {$code}: " . wp_remote_retrieve_body($response));
+        return false;
+    }
+
+    /**
+     * Render the SMTP / API sub-tabs for one server card.
+     */
+    private function render_conn_nav($prefix, $options) {
+        $mode = ($options[$prefix . '_mode'] ?? 'smtp') === 'api' ? 'api' : 'smtp';
+        ?>
+        <div class="smtpfb-subtabs smtpfb-conn-nav" data-prefix="<?php echo esc_attr($prefix); ?>">
+            <button type="button" class="smtpfb-subtab<?php echo $mode === 'smtp' ? ' active' : ''; ?>" data-mode="smtp">&#128228; SMTP</button>
+            <button type="button" class="smtpfb-subtab<?php echo $mode === 'api' ? ' active' : ''; ?>" data-mode="api">&#128273; API</button>
+        </div>
+        <input type="hidden" class="smtpfb-conn-mode" name="smtp_fallback_options[<?php echo esc_attr($prefix); ?>_mode]" value="<?php echo esc_attr($mode); ?>" />
+        <?php
+    }
+
+    /**
+     * Render the API pane (mailer picker + per-mailer credential fields)
+     * for one server card. Each mailer has its OWN option block that shows
+     * only the fields that provider actually needs (WP Mail SMTP style).
+     * Storage is namespaced per mailer: {prefix}_{mailer}_{field}.
+     */
+    private function render_api_pane($prefix, $options) {
+        $mode     = ($options[$prefix . '_mode'] ?? 'smtp') === 'api' ? 'api' : 'smtp';
+        $selected = $options[$prefix . '_mailer'] ?? 'other';
+        ?>
+        <div class="smtpfb-conn-pane smtpfb-conn-api<?php echo $mode === 'api' ? ' active' : ''; ?>" data-prefix="<?php echo esc_attr($prefix); ?>">
+
+            <div class="smtpfb-warn smtpfb-api-unsupported" style="display:none">
+                The selected mailer does not support API-key delivery. Pick a mailer with an API badge, or use the <strong>SMTP</strong> tab.
+            </div>
+
+            <div class="smtpfb-mailer-grid">
+                <?php foreach ($this->get_mailers() as $slug => $m) : ?>
+                    <label class="smtpfb-mailer<?php echo !empty($m['recommended']) ? ' has-ribbon' : ''; ?><?php echo empty($m['api']) ? ' smtpfb-mailer-disabled' : ''; ?>">
+                        <span class="smtpfb-mailer-tile<?php echo $selected === $slug ? ' is-checked' : ''; ?>" data-tile="<?php echo esc_attr($slug); ?>">
+                            <?php if (!empty($m['recommended'])) : ?><span class="smtpfb-mailer-ribbon">Recommended</span><?php endif; ?>
+                            <span class="smtpfb-mailer-logo <?php echo esc_attr($m['logo_class']); ?>"><?php echo esc_html($m['logo']); ?></span>
+                        </span>
+                        <span class="smtpfb-mailer-radio">
+                            <input type="radio" name="smtp_fallback_options[<?php echo esc_attr($prefix); ?>_mailer]" value="<?php echo esc_attr($slug); ?>" <?php checked($selected, $slug); ?> />
+                            <?php echo esc_html($m['label']); ?>
+                        </span>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="smtpfb-provider">
+                <?php foreach ($this->get_mailers() as $slug => $m) : ?>
+                    <div class="smtpfb-provider-block" data-provider="<?php echo esc_attr($slug); ?>" style="<?php echo $selected === $slug ? '' : 'display:none'; ?>">
+                        <h3 class="smtpfb-provider-title"><?php echo esc_html($m['label']); ?></h3>
+                        <p class="smtpfb-provider-desc"><?php echo esc_html($m['desc']); ?></p>
+                        <?php if (!empty($m['doc'])) : ?>
+                            <a class="smtpfb-provider-cta" href="<?php echo esc_url($m['doc']); ?>" target="_blank" rel="noopener noreferrer">Get Started with <?php echo esc_html($m['label']); ?></a>
+                        <?php endif; ?>
+
+                        <?php if (!empty($m['api']) && !empty($m['opts'])) : ?>
+                            <?php foreach ($m['opts'] as $f) :
+                                $store = $f['store'];
+                                $okey  = $prefix . '_' . $slug . '_' . $store;
+                                $name  = 'smtp_fallback_options[' . $okey . ']';
+                                // Fall back to the old shared field values for pre-existing configs
+                                $value = $options[$okey] ?? '';
+                                if ($value === '') {
+                                    $value = $options[$prefix . '_' . $store] ?? '';
+                                }
+                                if ($store === 'api_region' && $value === '') {
+                                    $value = 'us';
+                                }
+                            ?>
+                            <div class="smtpfb-field smtpfb-opt-field" style="max-width:520px;margin-top:14px">
+                                <label class="smtpfb-label">
+                                    <?php echo esc_html($f['label']); ?>
+                                    <?php if (!empty($f['required'])) : ?><span class="required">*</span><?php endif; ?>
+                                </label>
+
+                                <?php if ($f['type'] === 'password') : ?>
+                                    <div class="smtpfb-inline-row">
+                                        <div class="smtpfb-pass-wrap" style="flex:1">
+                                            <input type="password" name="<?php echo esc_attr($name); ?>"
+                                                   value="<?php echo esc_attr($value); ?>"
+                                                   class="smtpfb-input" data-store="<?php echo esc_attr($store); ?>"
+                                                   placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
+                                                   autocomplete="new-password" spellcheck="false"
+                                                   <?php echo $value !== '' ? 'readonly' : ''; ?> />
+                                            <button type="button" class="smtpfb-pass-toggle" data-target="<?php echo esc_attr($okey); ?>">&#128065;</button>
+                                        </div>
+                                        <?php if ($value !== '') : ?>
+                                            <button type="button" class="smtpfb-btn smtpfb-btn-outline smtpfb-btn-sm smtpfb-remove-key">Remove Key</button>
+                                        <?php endif; ?>
+                                    </div>
+
+                                <?php elseif ($f['type'] === 'region') : ?>
+                                    <div class="smtpfb-region-row">
+                                        <label><input type="radio" name="<?php echo esc_attr($name); ?>" value="us" data-store="api_region" <?php checked($value, 'us'); ?> /> US</label>
+                                        <label><input type="radio" name="<?php echo esc_attr($name); ?>" value="eu" data-store="api_region" <?php checked($value, 'eu'); ?> /> EU</label>
+                                    </div>
+
+                                <?php else : ?>
+                                    <input type="text" name="<?php echo esc_attr($name); ?>"
+                                           value="<?php echo esc_attr($value); ?>"
+                                           class="smtpfb-input" data-store="<?php echo esc_attr($store); ?>" spellcheck="false" />
+                                <?php endif; ?>
+
+                                <?php if (!empty($f['hint']) || !empty($f['link'])) : ?>
+                                    <p class="smtpfb-hint">
+                                        <?php echo esc_html($f['hint']); ?>
+                                        <?php if (!empty($f['link'])) : ?>
+                                            <a href="<?php echo esc_url($f['link']); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($f['link_text']); ?></a>
+                                        <?php endif; ?>
+                                    </p>
+                                <?php endif; ?>
+                            </div>
+                            <?php endforeach; ?>
+
+                        <?php elseif (empty($m['api'])) : ?>
+                            <p class="smtpfb-hint" style="margin-top:10px">
+                                This mailer is configured with SMTP credentials — switch to the <strong>SMTP</strong> tab above to set it up.
+                            </p>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="smtpfb-test-row">
+                <button type="button" class="smtpfb-btn smtpfb-btn-outline smtpfb-btn-sm smtpfb-test-api">&#128268; Test API Connection</button>
+                <span class="smtpfb-api-test-result"></span>
+            </div>
+        </div>
+        <?php
+    }
+    /**
+     * AJAX: verify API credentials for a mailer without sending an email.
+     */
+    public function ajax_test_api() {
+        check_ajax_referer('smtp_fallback_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+        $mailer = sanitize_key($_POST['mailer'] ?? '');
+        $key    = sanitize_text_field($_POST['api_key'] ?? '');
+        $secret = sanitize_text_field($_POST['api_secret'] ?? '');
+        $domain = sanitize_text_field($_POST['api_domain'] ?? '');
+        $region = (($_POST['api_region'] ?? 'us') === 'eu') ? 'eu' : 'us';
+
+        $mailers = $this->get_mailers();
+        if (empty($mailers[$mailer]['api'])) {
+            wp_send_json_error('This mailer does not support API delivery');
+        }
+        if ($key === '') {
+            wp_send_json_error('Enter an API key first');
+        }
+
+        $result = $this->probe_api_credentials($mailer, $key, $secret, $domain, $region);
+        if ($result[0]) {
+            wp_send_json_success($result[1]);
+        }
+        wp_send_json_error($result[1]);
+    }
+
+    /**
+     * Hit a cheap authenticated endpoint on the provider to validate credentials.
+     * Returns array(bool $ok, string $message).
+     */
+    private function probe_api_credentials($mailer, $key, $secret, $domain, $region) {
+        $args   = array('timeout' => 15, 'headers' => array());
+        $url    = '';
+        $method = 'GET';
+        $auth_probe = false; // true = empty-payload POST to the send endpoint (401/403 = bad key)
+
+        switch ($mailer) {
+            case 'sendgrid':
+                $url = 'https://api.sendgrid.com/v3/scopes';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                break;
+            case 'brevo':
+                $url = 'https://api.brevo.com/v3/account';
+                $args['headers']['api-key'] = $key;
+                break;
+            case 'postmark':
+                $url = 'https://api.postmarkapp.com/server';
+                $args['headers']['X-Postmark-Server-Token'] = $key;
+                $args['headers']['Accept'] = 'application/json';
+                break;
+            case 'resend':
+                $url = 'https://api.resend.com/domains';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                break;
+            case 'mailersend':
+                $url = 'https://api.mailersend.com/v1/api-quota';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                break;
+            case 'sparkpost':
+                $url = ($region === 'eu' ? 'https://api.eu.sparkpost.com' : 'https://api.sparkpost.com') . '/api/v1/account';
+                $args['headers']['Authorization'] = $key;
+                break;
+            case 'smtp2go':
+                $url    = 'https://api.smtp2go.com/v3/stats/email_summary';
+                $method = 'POST';
+                $args['headers']['X-Smtp2go-Api-Key'] = $key;
+                $args['headers']['Content-Type'] = 'application/json';
+                $args['body'] = '{}';
+                break;
+            case 'smtpcom':
+                $url = 'https://api.smtp.com/v4/account?api_key=' . rawurlencode($key);
+                break;
+            case 'mandrill':
+                $url    = 'https://mandrillapp.com/api/1.0/users/ping.json';
+                $method = 'POST';
+                $args['headers']['Content-Type'] = 'application/json';
+                $args['body'] = wp_json_encode(array('key' => $key));
+                break;
+            case 'mailgun':
+                if ($domain === '') {
+                    return array(false, 'Enter your Mailgun sending domain first');
+                }
+                $url = ($region === 'eu' ? 'https://api.eu.mailgun.net' : 'https://api.mailgun.net') . '/v3/domains/' . rawurlencode($domain);
+                $args['headers']['Authorization'] = 'Basic ' . base64_encode('api:' . $key);
+                break;
+            case 'mailjet':
+                if ($secret === '') {
+                    return array(false, 'Enter your Mailjet secret key first');
+                }
+                $url = 'https://api.mailjet.com/v3/REST/apikey';
+                $args['headers']['Authorization'] = 'Basic ' . base64_encode($key . ':' . $secret);
+                break;
+            case 'sendlayer':
+                $url    = 'https://console.sendlayer.com/api/v1/email';
+                $method = 'POST';
+                $args['headers']['Authorization'] = 'Bearer ' . $key;
+                $args['headers']['Content-Type'] = 'application/json';
+                $args['body'] = '{}';
+                $auth_probe = true;
+                break;
+            case 'elastic':
+                $url    = 'https://api.elasticemail.com/v4/emails';
+                $method = 'POST';
+                $args['headers']['X-ElasticEmail-ApiKey'] = $key;
+                $args['headers']['Content-Type'] = 'application/json';
+                $args['body'] = '{}';
+                $auth_probe = true;
+                break;
+            default:
+                return array(false, 'No API test available for this mailer');
+        }
+
+        $response = ($method === 'POST') ? wp_remote_post($url, $args) : wp_remote_get($url, $args);
+        if (is_wp_error($response)) {
+            return array(false, 'Connection failed: ' . $response->get_error_message());
+        }
+        $code = wp_remote_retrieve_response_code($response);
+
+        if ($auth_probe) {
+            // Auth passed but payload is empty → provider returns a validation error, not 401/403
+            if ($code === 401 || $code === 403) {
+                return array(false, 'API key rejected (HTTP ' . $code . ')');
+            }
+            if ($code >= 200 && $code < 500) {
+                return array(true, 'API key accepted');
+            }
+            return array(false, 'Unexpected response (HTTP ' . $code . ')');
+        }
+
+        if ($code >= 200 && $code < 300) {
+            return array(true, 'API credentials verified');
+        }
+        if ($code === 401 || $code === 403) {
+            return array(false, 'API key rejected (HTTP ' . $code . ')');
+        }
+        if ($mailer === 'mandrill' && $code === 500) {
+            return array(false, 'API key rejected');
+        }
+        if ($mailer === 'mailgun' && $code === 404) {
+            return array(false, 'Domain not found on this account / region');
+        }
+        return array(false, 'Verification failed (HTTP ' . $code . ')');
+    }
+
+    /**
      * Sanitize options
      */
     public function sanitize_options($input) {
         $sanitized = array();
         
+        // Per-server mailer / API settings
+        $allowed_mailers = array_keys($this->get_mailers());
+        foreach (array('primary', 'fallback') as $prefix) {
+            $mailer = sanitize_key($input[$prefix . '_mailer'] ?? 'other');
+            $sanitized[$prefix . '_mailer'] = in_array($mailer, $allowed_mailers, true) ? $mailer : 'other';
+            $sanitized[$prefix . '_mode'] = (($input[$prefix . '_mode'] ?? 'smtp') === 'api') ? 'api' : 'smtp';
+            $sanitized[$prefix . '_api_key'] = sanitize_text_field($input[$prefix . '_api_key'] ?? '');
+            $sanitized[$prefix . '_api_secret'] = sanitize_text_field($input[$prefix . '_api_secret'] ?? '');
+            $sanitized[$prefix . '_api_domain'] = sanitize_text_field($input[$prefix . '_api_domain'] ?? '');
+            $sanitized[$prefix . '_api_region'] = in_array($input[$prefix . '_api_region'] ?? 'us', array('us', 'eu'), true) ? $input[$prefix . '_api_region'] : 'us';
+            $sanitized[$prefix . '_api_sender_name'] = sanitize_text_field($input[$prefix . '_api_sender_name'] ?? '');
+        }
+
+        // Per-mailer namespaced credential fields ({prefix}_{mailer}_{field})
+        foreach (array('primary', 'fallback') as $prefix) {
+            foreach ($this->get_mailers() as $slug => $m) {
+                if (empty($m['api']) || empty($m['opts'])) {
+                    continue;
+                }
+                foreach ($m['opts'] as $f) {
+                    $okey = $prefix . '_' . $slug . '_' . $f['store'];
+                    if (!array_key_exists($okey, $input)) {
+                        continue;
+                    }
+                    if ($f['store'] === 'api_region') {
+                        $sanitized[$okey] = in_array($input[$okey], array('us', 'eu'), true) ? $input[$okey] : 'us';
+                    } else {
+                        $sanitized[$okey] = sanitize_text_field($input[$okey]);
+                    }
+                }
+            }
+        }
+
         // Email identity
         $sanitized['from_email'] = sanitize_email($input['from_email'] ?? '');
         $sanitized['from_name'] = sanitize_text_field($input['from_name'] ?? '');
@@ -1232,13 +2005,28 @@ class SMTP_Fallback_Plugin {
             return;
         }
         
-        wp_enqueue_script('smtp-fallback-admin', SMTP_FALLBACK_PLUGIN_URL . 'assets/admin.js', array('jquery'), SMTP_FALLBACK_VERSION, true);
-        wp_enqueue_style('smtp-fallback-admin', SMTP_FALLBACK_PLUGIN_URL . 'assets/admin.css', array(), SMTP_FALLBACK_VERSION);
+        // Use filemtime so browsers pick up asset changes immediately (cache busting)
+        $js_ver  = @filemtime(SMTP_FALLBACK_PLUGIN_PATH . 'assets/admin.js') ?: SMTP_FALLBACK_VERSION;
+        $css_ver = @filemtime(SMTP_FALLBACK_PLUGIN_PATH . 'assets/admin.css') ?: SMTP_FALLBACK_VERSION;
+        wp_enqueue_script('smtp-fallback-admin', SMTP_FALLBACK_PLUGIN_URL . 'assets/admin.js', array('jquery'), $js_ver, true);
+        wp_enqueue_style('smtp-fallback-admin', SMTP_FALLBACK_PLUGIN_URL . 'assets/admin.css', array(), $css_ver);
         
         wp_localize_script('smtp-fallback-admin', 'smtpFallback', array(
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('smtp_fallback_nonce')
         ));
+
+        // Mailer metadata for the API / SMTP mailer picker
+        $mailer_meta = array();
+        foreach ($this->get_mailers() as $slug => $m) {
+            $mailer_meta[$slug] = array(
+                'api'     => !empty($m['api']),
+                'label'   => $m['label'],
+                'fields'  => (object) $m['fields'],
+                'key_url' => $m['key_url'],
+            );
+        }
+        wp_localize_script('smtp-fallback-admin', 'smtpFallbackMailers', $mailer_meta);
     }
     
     /**
@@ -1265,16 +2053,23 @@ class SMTP_Fallback_Plugin {
             }
             
             // Temporarily update options with posted settings for testing
+            // Only connection-related keys may be overridden (whitelist)
+            $testable_keys = array(
+                'primary_host', 'primary_port', 'primary_username', 'primary_password', 'primary_encryption',
+                'fallback_host', 'fallback_port', 'fallback_username', 'fallback_password', 'fallback_encryption',
+            );
             $temp_options = $this->options;
-            if (!empty($settings)) {
+            if (!empty($settings) && is_array($settings)) {
                 foreach ($settings as $setting) {
                     if (isset($setting['name']) && isset($setting['value'])) {
                         $key = $setting['name'];
                         $value = $setting['value'];
-                        
+
                         if (strpos($key, 'smtp_fallback_options[') === 0) {
                             $clean_key = str_replace(array('smtp_fallback_options[', ']'), '', $key);
-                            $temp_options[$clean_key] = sanitize_text_field($value);
+                            if (in_array($clean_key, $testable_keys, true)) {
+                                $temp_options[$clean_key] = sanitize_text_field($value);
+                            }
                         }
                     }
                 }
@@ -1597,7 +2392,7 @@ class SMTP_Fallback_Plugin {
             return;
         }
 
-        $user_ip = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
+        $user_ip = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', $_SERVER['REMOTE_ADDR']) : 'Unknown';
         $timestamp = current_time('mysql');
         $notification_email = $this->options['notification_email'] ?? get_option('admin_email');
         
@@ -1619,7 +2414,7 @@ class SMTP_Fallback_Plugin {
             return;
         }
         
-        $user_ip = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
+        $user_ip = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', $_SERVER['REMOTE_ADDR']) : 'Unknown';
         $timestamp = current_time('mysql');
         $notification_email = $this->options['notification_email'] ?? get_option('admin_email');
         
@@ -1647,7 +2442,7 @@ class SMTP_Fallback_Plugin {
         }
         
         $user = get_userdata($user_id);
-        $user_ip = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
+        $user_ip = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', $_SERVER['REMOTE_ADDR']) : 'Unknown';
         $timestamp = current_time('mysql');
         $notification_email = $this->options['notification_email'] ?? get_option('admin_email');
         
@@ -1730,9 +2525,12 @@ class SMTP_Fallback_Plugin {
             }
         }
         
+        // Malware analysis on new/modified files (webshell signatures + PHP-in-uploads)
+        $suspicious = $this->analyze_changed_files(array_merge($changes['added'], $changes['modified']));
+
         // If changes detected, send email and update hashes
         if (!empty($changes['added']) || !empty($changes['modified']) || !empty($changes['removed'])) {
-            $this->send_file_change_notification($changes);
+            $this->send_file_change_notification($changes, $suspicious);
             update_option('smtp_fallback_file_hashes', $current_hashes, 'no');
         }
     }
@@ -1769,12 +2567,95 @@ class SMTP_Fallback_Plugin {
     /**
      * Send file change notification
      */
-    private function send_file_change_notification($changes) {
+    /**
+     * Run malware heuristics over newly added / modified files.
+     * Returns array of "path — reason" strings for anything suspicious.
+     */
+    private function analyze_changed_files($files) {
+        $suspicious = array();
+        $upload = wp_upload_dir(null, false);
+        $uploads_base = !empty($upload['basedir']) ? wp_normalize_path($upload['basedir']) : '';
+        $max_scan = 200;              // cap the number of files content-scanned per run
+        $max_size = 1024 * 1024;      // skip files larger than 1 MB
+
+        foreach (array_slice($files, 0, $max_scan) as $file) {
+            $norm = wp_normalize_path($file);
+            $ext  = strtolower(pathinfo($norm, PATHINFO_EXTENSION));
+
+            // Any PHP file inside uploads is a red flag by itself
+            $in_uploads = $uploads_base && strpos($norm, $uploads_base) === 0;
+            if ($in_uploads && in_array($ext, array('php', 'php3', 'php4', 'php5', 'php7', 'phtml'), true)) {
+                $suspicious[] = $file . ' — PHP file inside the uploads directory (uploads should never contain executable PHP)';
+                // still content-scan it below for extra detail
+            }
+
+            if (!in_array($ext, array('php', 'php3', 'php4', 'php5', 'php7', 'phtml', 'js'), true)) {
+                continue;
+            }
+            if (!is_readable($file) || filesize($file) > $max_size) {
+                continue;
+            }
+            $content = @file_get_contents($file);
+            if ($content === false) {
+                continue;
+            }
+            $hit = $this->scan_content_for_malware($content);
+            if ($hit !== false) {
+                $suspicious[] = $file . ' — matched signature: ' . $hit;
+            }
+        }
+        return array_unique($suspicious);
+    }
+
+    /**
+     * Signature scan for common webshell / backdoor patterns.
+     * Signatures are concatenated so this file never flags itself.
+     * Returns the matched signature name or false when clean.
+     */
+    private function scan_content_for_malware($content) {
+        $sigs = array(
+            'eval+base64_decode'    => 'eval(' . 'base64_decode(',
+            'eval+gzinflate'        => 'eval(' . 'gzinflate(',
+            'eval+gzuncompress'     => 'eval(' . 'gzuncompress(',
+            'eval+str_rot13'        => 'eval(' . 'str_rot13(',
+            'eval+superglobal'      => 'eval(' . '$_',
+            'assert+superglobal'    => 'assert(' . '$_',
+            'system+superglobal'    => 'system(' . '$_',
+            'exec+superglobal'      => 'exec(' . '$_',
+            'shell_exec+superglobal'=> 'shell_exec(' . '$_',
+            'passthru+superglobal'  => 'passthru(' . '$_',
+            'create_function+input' => 'create_function(' . '$_',
+            'base64+POST'           => 'base64_decode(' . '$_POST',
+            'base64+GET'            => 'base64_decode(' . '$_GET',
+            'base64+REQUEST'        => 'base64_decode(' . '$_REQUEST',
+            'base64+COOKIE'         => 'base64_decode(' . '$_COOKIE',
+            'rot13+base64'          => 'str_rot13(' . 'base64_decode(',
+        );
+        $normalized = preg_replace('/\s+/', '', $content);
+        foreach ($sigs as $name => $sig) {
+            if (stripos($normalized, $sig) !== false) {
+                return $name;
+            }
+        }
+        return false;
+    }
+
+    private function send_file_change_notification($changes, $suspicious = array()) {
         $notification_email = $this->options['notification_email'] ?? get_option('admin_email');
-        $subject = 'File Change Alert - ' . get_bloginfo('name');
-        
+        $subject = (!empty($suspicious) ? 'SECURITY ALERT (possible malware) - ' : 'File Change Alert - ') . get_bloginfo('name');
+
         $message = "File changes have been detected on your WordPress site.\n\n";
-        
+
+        if (!empty($suspicious)) {
+            $message .= "!!! POSSIBLE MALWARE DETECTED !!!\n";
+            $message .= "The following files matched known webshell/backdoor patterns.\n";
+            $message .= "Inspect them immediately and remove or restore from a clean backup:\n\n";
+            foreach (array_slice($suspicious, 0, 50) as $line) {
+                $message .= "  [!] " . $line . "\n";
+            }
+            $message .= "\n";
+        }
+
         if (!empty($changes['modified'])) {
             $message .= "== Modified Files ==\n";
             foreach (array_slice($changes['modified'], 0, 50) as $file) { // Limit to 50
@@ -1815,6 +2696,118 @@ class SMTP_Fallback_Plugin {
         $options = $this->get_options();
         $nonce   = wp_create_nonce('smtp_fallback_nonce');
         ?>
+        <style>
+        /* Inline copy of the mailer CSS so the feature works even if admin.css is cached/stale */
+        /* ===== Mailer picker / API-SMTP tabs ===== */
+        #smtp-fallback-page .smtpfb-mailer-grid{display:grid!important;grid-template-columns:repeat(6,1fr);gap:10px 12px}
+        @media(max-width:1100px){#smtp-fallback-page .smtpfb-mailer-grid{grid-template-columns:repeat(4,1fr)}}
+        @media(max-width:700px){#smtp-fallback-page .smtpfb-mailer-grid{grid-template-columns:repeat(3,1fr)}}
+        @media(max-width:480px){#smtp-fallback-page .smtpfb-mailer-grid{grid-template-columns:repeat(2,1fr)}}
+        #smtp-fallback-page .smtpfb-mailer{display:block;cursor:pointer}
+        #smtp-fallback-page .smtpfb-mailer-tile{position:relative;border:1px solid #dcdcde;border-radius:6px;background:#fff;height:46px;display:flex;align-items:center;justify-content:center;padding:6px;overflow:hidden;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
+        #smtp-fallback-page .smtpfb-mailer:hover .smtpfb-mailer-tile{border-color:#a7aaad;transform:translateY(-2px);box-shadow:0 3px 10px rgba(0,0,0,.08)}
+        #smtp-fallback-page .smtpfb-mailer-logo{font-size:13px;font-weight:800;letter-spacing:-.2px;line-height:1.1;text-align:center;color:#3c434a;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        #smtp-fallback-page .lg-php{color:#8892bf;font-style:italic;font-size:16px}
+        #smtp-fallback-page .lg-sendlayer{color:#2b3a67}
+        #smtp-fallback-page .lg-smtpcom{color:#1a1a1a;letter-spacing:1px}
+        #smtp-fallback-page .lg-brevo{color:#0b996e}
+        #smtp-fallback-page .lg-aws{color:#232f3e;font-size:15px}
+        #smtp-fallback-page .lg-elastic{color:#5b7fa6;font-weight:600;font-size:11.5px}
+        #smtp-fallback-page .lg-google{color:#4285f4;font-size:14px}
+        #smtp-fallback-page .lg-mailgun{color:#c02026}
+        #smtp-fallback-page .lg-mailjet{color:#f5a623}
+        #smtp-fallback-page .lg-mailersend{color:#3b6ef5;font-size:11.5px}
+        #smtp-fallback-page .lg-mandrill{color:#6b7280;font-size:17px}
+        #smtp-fallback-page .lg-outlook{color:#0078d4;font-size:12px}
+        #smtp-fallback-page .lg-postmark{color:#1a1a1a;font-weight:600;font-size:12px}
+        #smtp-fallback-page .lg-resend{color:#111}
+        #smtp-fallback-page .lg-sendgrid{color:#1a82e2;font-size:12px}
+        #smtp-fallback-page .lg-smtp2go{color:#0f5aa8;font-size:12px}
+        #smtp-fallback-page .lg-sparkpost{color:#fa6423;font-size:11px}
+        #smtp-fallback-page .lg-zoho{color:#e42527;letter-spacing:1px}
+        #smtp-fallback-page .smtpfb-mailer-ribbon{position:absolute;top:0;left:0;right:0;background:#d98500;color:#fff;font-size:6.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;text-align:center;padding:1px 0;line-height:1.3}
+        #smtp-fallback-page .smtpfb-mailer.has-ribbon .smtpfb-mailer-logo{margin-top:7px}
+        #smtp-fallback-page .smtpfb-mailer-tile.is-checked{border:2px solid #d98500;box-shadow:0 0 0 2px rgba(217,133,0,.18);transform:translateY(-1px)}
+        #smtp-fallback-page .smtpfb-mailer-radio{display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11px;color:#3c434a;line-height:1.2}
+        #smtp-fallback-page .smtpfb-mailer-radio input{margin:0;flex-shrink:0}
+        #smtp-fallback-page .smtpfb-mailer-disabled .smtpfb-mailer-radio{color:#8c8f94}
+        #smtp-fallback-page .smtpfb-mailer-disabled .smtpfb-mailer-tile{opacity:.65}
+        #smtp-fallback-page .smtpfb-mailer-api-note{font-size:11.5px;color:#646970;margin-top:10px;font-style:italic}
+        /* ---- Provider info panel ---- */
+        #smtp-fallback-page .smtpfb-provider{border-top:1px solid #e2e8f0;margin-top:14px;padding-top:14px}
+        #smtp-fallback-page .smtpfb-provider-block{animation:smtpfbFadeUp .3s ease}
+        #smtp-fallback-page .smtpfb-provider-title{font-size:14.5px;font-weight:700;color:#1e293b;margin:0 0 6px}
+        #smtp-fallback-page .smtpfb-provider p{font-size:12.5px;color:#2271b1;line-height:1.6;margin:0 0 8px}
+        #smtp-fallback-page .smtpfb-provider p.smtpfb-provider-desc{color:#2271b1}
+        #smtp-fallback-page .smtpfb-provider a{color:#2271b1}
+        #smtp-fallback-page a.smtpfb-provider-cta{display:inline-block;background:#2271b1!important;color:#ffffff!important;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;text-decoration:none!important;margin-bottom:8px;transition:background .18s ease,transform .18s ease;border:none}
+        #smtp-fallback-page a.smtpfb-provider-cta:hover{background:#135e96!important;color:#ffffff!important;transform:translateY(-1px)}
+        #smtp-fallback-page a.smtpfb-provider-cta:visited{color:#ffffff!important}
+        #smtp-fallback-page .smtpfb-provider-legal{display:block;font-size:11.5px;color:#2271b1}
+        /* ---- Connection mode sub-tabs ---- */
+        #smtp-fallback-page .smtpfb-subtabs{display:inline-flex;background:#f1f5f9;border-radius:10px;padding:4px;gap:4px;margin-bottom:14px}
+        #smtp-fallback-page .smtpfb-subtab{background:none;border:none;padding:7px 16px;border-radius:7px;font-size:12.5px;font-weight:600;color:#64748b;cursor:pointer;transition:background .18s ease,color .18s ease,box-shadow .18s ease}
+        #smtp-fallback-page .smtpfb-subtab:hover{color:#2563eb}
+        #smtp-fallback-page .smtpfb-subtab.active{background:#fff;color:#2563eb;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+        #smtp-fallback-page .smtpfb-subtab[disabled]{opacity:.45;cursor:not-allowed}
+        #smtp-fallback-page .smtpfb-warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:8px;padding:10px 14px;font-size:12.5px;margin-bottom:14px;animation:smtpfbFadeUp .3s ease}
+        /* ---- Per-server API / SMTP connection panes ---- */
+        #smtp-fallback-page .smtpfb-conn-nav{margin-bottom:14px}
+        #smtp-fallback-page .smtpfb-conn-pane{display:none!important}
+        #smtp-fallback-page .smtpfb-conn-pane.active{display:block!important;animation:smtpfbFadeUp .28s ease}
+        #smtp-fallback-page .smtpfb-conn-api .smtpfb-mailer-grid{margin-bottom:2px}
+        #smtp-fallback-page .smtpfb-remove-key{flex-shrink:0}
+        #smtp-fallback-page .smtpfb-api-key-input[readonly]{background:#f6f7f7;letter-spacing:2px}
+        @keyframes smtpfbFadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        /* ---- Design pass: tiles ---- */
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer{animation:smtpfbTileIn .35s ease backwards}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(1){animation-delay:.02s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(2){animation-delay:.04s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(3){animation-delay:.06s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(4){animation-delay:.08s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(5){animation-delay:.10s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(6){animation-delay:.12s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(7){animation-delay:.14s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(8){animation-delay:.16s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(9){animation-delay:.18s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(10){animation-delay:.20s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(11){animation-delay:.22s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(12){animation-delay:.24s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(13){animation-delay:.26s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(14){animation-delay:.28s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(15){animation-delay:.30s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(16){animation-delay:.32s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(17){animation-delay:.34s}
+        #smtp-fallback-page .smtpfb-conn-api.active .smtpfb-mailer:nth-child(18){animation-delay:.36s}
+        @keyframes smtpfbTileIn{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+        #smtp-fallback-page .smtpfb-mailer-tile.is-checked::after{content:"\2713";position:absolute;top:-7px;right:-7px;width:18px;height:18px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border-radius:50%;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(217,133,0,.4);animation:smtpfbPop .25s ease}
+        #smtp-fallback-page .smtpfb-mailer-tile.is-checked{overflow:visible}
+        #smtp-fallback-page .smtpfb-mailer-tile.is-checked .smtpfb-mailer-ribbon{border-radius:4px 4px 0 0}
+        @keyframes smtpfbPop{from{transform:scale(0)}60%{transform:scale(1.25)}to{transform:scale(1)}}
+        /* ---- Design pass: sub-tabs ---- */
+        #smtp-fallback-page .smtpfb-subtab.active{background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#ffffff!important;box-shadow:0 2px 8px rgba(37,99,235,.35)}
+        #smtp-fallback-page .smtpfb-subtabs{border:1px solid #e2e8f0}
+        /* ---- Design pass: provider panel ---- */
+        #smtp-fallback-page .smtpfb-provider{border-top:none;margin-top:14px;padding:14px 16px;background:linear-gradient(180deg,#f8fafc,#f1f5f9);border:1px solid #e2e8f0;border-left:3px solid #d98500;border-radius:8px}
+        /* ---- API test result badges ---- */
+        #smtp-fallback-page .smtpfb-api-test-result{margin-left:10px}
+        #smtp-fallback-page .smtpfb-badge-ok,#smtp-fallback-page .smtpfb-badge-err,#smtp-fallback-page .smtpfb-badge-wait{display:inline-flex;align-items:center;gap:5px;border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;animation:smtpfbFadeUp .25s ease}
+        #smtp-fallback-page .smtpfb-badge-ok{background:#dcfce7;color:#15803d;border:1px solid #86efac}
+        #smtp-fallback-page .smtpfb-badge-err{background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5}
+        #smtp-fallback-page .smtpfb-badge-wait{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
+        #smtp-fallback-page .smtpfb-mini-spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(37,99,235,.25);border-top-color:#2563eb;border-radius:50%;animation:smtpfbSpin .7s linear infinite}
+        @keyframes smtpfbSpin{to{transform:rotate(360deg)}}
+        /* ---- Per-mailer option fields ---- */
+        #smtp-fallback-page .smtpfb-opt-field{animation:smtpfbFadeUp .25s ease}
+        #smtp-fallback-page .smtpfb-region-row{display:flex;gap:18px;align-items:center;padding:4px 0}
+        #smtp-fallback-page .smtpfb-region-row label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#3c434a;cursor:pointer}
+        #smtp-fallback-page .smtpfb-region-row input{margin:0}
+        /* ---- Fallback button styles (in case external admin.css is stale) ---- */
+        #smtp-fallback-page .smtpfb-test-row{display:flex;align-items:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid #f1f5f9}
+        #smtp-fallback-page button.smtpfb-test-api{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;background:#fff;color:#2563eb;border:2px solid #2563eb;transition:background .18s ease,transform .18s ease}
+        #smtp-fallback-page button.smtpfb-test-api:hover{background:#eff6ff;transform:translateY(-1px)}
+        #smtp-fallback-page button.smtpfb-test-api:disabled{opacity:.55;cursor:wait;transform:none}
+        </style>
         <div class="wrap" id="smtp-fallback-page">
 
             <!-- WP notices anchor: other plugins (Wordfence etc.) inject notices after .wrap h1 -->
@@ -1888,6 +2881,10 @@ class SMTP_Fallback_Plugin {
                             </div>
                         </div>
 
+                        <?php $this->render_conn_nav('primary', $options); ?>
+
+                        <div class="smtpfb-conn-pane smtpfb-conn-smtp<?php echo ($options['primary_mode'] ?? 'smtp') === 'api' ? '' : ' active'; ?>" data-prefix="primary">
+
                         <div class="smtpfb-field-group three">
                             <div class="smtpfb-field" style="grid-column:span 2">
                                 <label class="smtpfb-label">SMTP Host <span class="required">*</span></label>
@@ -1937,6 +2934,9 @@ class SMTP_Fallback_Plugin {
                             </button>
                             <span id="primary-connection-result"></span>
                         </div>
+                        </div><!-- /conn-smtp primary -->
+
+                        <?php $this->render_api_pane('primary', $options); ?>
                     </div>
 
                     <!-- ---- Fallback SMTP ---- -->
@@ -1948,6 +2948,10 @@ class SMTP_Fallback_Plugin {
                                 <div class="smtpfb-card-subtitle">Backup server used when primary fails — highly recommended</div>
                             </div>
                         </div>
+
+                        <?php $this->render_conn_nav('fallback', $options); ?>
+
+                        <div class="smtpfb-conn-pane smtpfb-conn-smtp<?php echo ($options['fallback_mode'] ?? 'smtp') === 'api' ? '' : ' active'; ?>" data-prefix="fallback">
 
                         <div class="smtpfb-field-group three">
                             <div class="smtpfb-field" style="grid-column:span 2">
@@ -1998,6 +3002,9 @@ class SMTP_Fallback_Plugin {
                             </button>
                             <span id="fallback-connection-result"></span>
                         </div>
+                        </div><!-- /conn-smtp fallback -->
+
+                        <?php $this->render_api_pane('fallback', $options); ?>
                     </div>
 
                     <!-- ---- Failover + Advanced ---- -->
@@ -2047,7 +3054,7 @@ class SMTP_Fallback_Plugin {
                             </label>
                             <div class="smtpfb-toggle-label">
                                 <strong>Debug Mode</strong>
-                                <span>Log detailed SMTP information to <code>wp-content/smtp-fallback-debug.log</code>. Disable in production.</span>
+                                <span>Log detailed SMTP information to a protected file in <code>uploads/smtp-fallback/</code>. Disable in production.</span>
                             </div>
                         </div>
                     </div>
@@ -2294,6 +3301,132 @@ class SMTP_Fallback_Plugin {
             });
         })(jQuery);
         </script>
+        <script>
+        /* Inline per-server mailer logic — self-contained, no external file needed */
+        (function () {
+            var API_AJAXURL = '<?php echo esc_js( admin_url('admin-ajax.php') ); ?>';
+            var API_NONCE   = '<?php echo esc_js( wp_create_nonce('smtp_fallback_nonce') ); ?>';
+            var MAILERS = <?php
+                $mm = array();
+                foreach ($this->get_mailers() as $slug => $m) {
+                    $mm[$slug] = array(
+                        'api'     => !empty($m['api']),
+                        'label'   => $m['label'],
+                        'fields'  => (object) $m['fields'],
+                        'key_url' => $m['key_url'],
+                    );
+                }
+                echo wp_json_encode($mm);
+            ?>;
+
+            function apiPane(prefix) {
+                return document.querySelector('.smtpfb-conn-api[data-prefix="' + prefix + '"]');
+            }
+            function currentMailer(prefix) {
+                var c = document.querySelector('input[name="smtp_fallback_options[' + prefix + '_mailer]"]:checked');
+                return c ? c.value : 'other';
+            }
+            function refresh(prefix) {
+                var pane = apiPane(prefix);
+                if (!pane) return;
+                var slug = currentMailer(prefix);
+                var cfg = MAILERS[slug] || { api: false, label: slug };
+                pane.querySelectorAll('.smtpfb-mailer-tile').forEach(function (t) {
+                    t.classList.toggle('is-checked', t.getAttribute('data-tile') === slug);
+                });
+                // Each mailer has its own option block with only its required fields
+                pane.querySelectorAll('.smtpfb-provider-block').forEach(function (b) {
+                    b.style.display = (b.getAttribute('data-provider') === slug) ? '' : 'none';
+                });
+                var warn = pane.querySelector('.smtpfb-api-unsupported');
+                if (warn) warn.style.display = cfg.api ? 'none' : '';
+            }
+            function setMode(prefix, mode) {
+                var input = document.querySelector('input.smtpfb-conn-mode[name="smtp_fallback_options[' + prefix + '_mode]"]');
+                if (input) input.value = mode;
+                var nav = document.querySelector('.smtpfb-conn-nav[data-prefix="' + prefix + '"]');
+                if (nav) {
+                    nav.querySelectorAll('.smtpfb-subtab').forEach(function (b) {
+                        b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+                    });
+                }
+                document.querySelectorAll('.smtpfb-conn-pane[data-prefix="' + prefix + '"]').forEach(function (p) {
+                    p.classList.toggle('active', p.classList.contains('smtpfb-conn-' + mode));
+                });
+            }
+            document.querySelectorAll('.smtpfb-conn-nav').forEach(function (nav) {
+                var prefix = nav.getAttribute('data-prefix');
+                nav.querySelectorAll('.smtpfb-subtab').forEach(function (btn) {
+                    btn.addEventListener('click', function () { setMode(prefix, btn.getAttribute('data-mode')); });
+                });
+            });
+            document.querySelectorAll('.smtpfb-conn-api input[type="radio"]').forEach(function (radio) {
+                radio.addEventListener('change', function () {
+                    var pane = radio.closest('.smtpfb-conn-api');
+                    if (pane) refresh(pane.getAttribute('data-prefix'));
+                });
+            });
+            document.querySelectorAll('.smtpfb-remove-key').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var pane = btn.closest('.smtpfb-conn-api');
+                    var input = pane ? pane.querySelector('.smtpfb-api-key-input') : null;
+                    if (input) { input.value = ''; input.removeAttribute('readonly'); input.focus(); }
+                    btn.style.display = 'none';
+                });
+            });
+            /* Test API Connection buttons */
+            document.querySelectorAll('.smtpfb-test-api').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var pane = btn.closest('.smtpfb-conn-api');
+                    if (!pane) return;
+                    var prefix = pane.getAttribute('data-prefix');
+                    var result = pane.querySelector('.smtpfb-api-test-result');
+                    // Read values from the ACTIVE mailer's option block (data-store attrs)
+                    var slug = currentMailer(prefix);
+                    var block = pane.querySelector('.smtpfb-provider-block[data-provider="' + slug + '"]');
+                    var val = function (store) {
+                        if (!block) return '';
+                        var el = block.querySelector('[data-store="' + store + '"]');
+                        if (!el) return '';
+                        if (el.type === 'radio') {
+                            var c = block.querySelector('[data-store="' + store + '"]:checked');
+                            return c ? c.value : 'us';
+                        }
+                        return el.value;
+                    };
+                    var params = new URLSearchParams();
+                    params.append('action', 'smtp_test_api');
+                    params.append('nonce', API_NONCE);
+                    params.append('mailer', slug);
+                    params.append('api_key', val('api_key'));
+                    params.append('api_secret', val('api_secret'));
+                    params.append('api_domain', val('api_domain'));
+                    params.append('api_region', val('api_region'));
+
+                    btn.disabled = true;
+                    if (result) result.innerHTML = '<span class="smtpfb-badge-wait"><span class="smtpfb-mini-spin"></span> Testing&hellip;</span>';
+                    fetch(API_AJAXURL, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                        body: params.toString()
+                    })
+                    .then(function (r) { return r.json(); })
+                    .then(function (r) {
+                        btn.disabled = false;
+                        if (result) result.innerHTML = '<span class="' + (r.success ? 'smtpfb-badge-ok' : 'smtpfb-badge-err') + '">' + (r.success ? '&#10003; ' : '&#10007; ') + (r.data || '') + '</span>';
+                    })
+                    .catch(function () {
+                        btn.disabled = false;
+                        if (result) result.innerHTML = '<span class="smtpfb-badge-err">&#10007; Request failed</span>';
+                    });
+                });
+            });
+
+            refresh('primary');
+            refresh('fallback');
+        })();
+        </script>
 <?php
     }
     
@@ -2303,17 +3436,56 @@ class SMTP_Fallback_Plugin {
     private function log($message) {
         $timestamp = current_time('mysql');
         $log_message = "[{$timestamp}] SMTP Fallback: {$message}";
-        
+
         // Log to WordPress error log
         if ($this->debug_mode || (defined('WP_DEBUG') && WP_DEBUG)) {
             error_log($log_message);
         }
-        
+
         // Also log to custom file for easier debugging
-        $log_file = WP_CONTENT_DIR . '/smtp-fallback-debug.log';
         if ($this->debug_mode) {
-            file_put_contents($log_file, $log_message . "\n", FILE_APPEND | LOCK_EX);
+            $log_file = $this->get_secure_log_file();
+            if ($log_file) {
+                file_put_contents($log_file, $log_message . "\n", FILE_APPEND | LOCK_EX);
+            }
         }
+    }
+
+    /**
+     * Debug log lives in a protected uploads subfolder with an unguessable
+     * name — never at a predictable public URL like wp-content/debug.log.
+     */
+    private function get_secure_log_file() {
+        $upload = wp_upload_dir(null, false);
+        if (empty($upload['basedir'])) {
+            return false;
+        }
+        $dir = $upload['basedir'] . '/smtp-fallback';
+        if (!is_dir($dir)) {
+            if (!wp_mkdir_p($dir)) {
+                return false;
+            }
+        }
+        // Deny web access (Apache/LiteSpeed) + stop directory listing everywhere
+        if (!file_exists($dir . '/.htaccess')) {
+            @file_put_contents($dir . '/.htaccess', "Require all denied\nDeny from all\n");
+        }
+        if (!file_exists($dir . '/index.php')) {
+            @file_put_contents($dir . '/index.php', "<?php // Silence is golden\n");
+        }
+        // Random log filename, persisted so the location is stable per site
+        $suffix = get_option('smtp_fallback_log_suffix');
+        if (!$suffix) {
+            $suffix = wp_generate_password(16, false);
+            update_option('smtp_fallback_log_suffix', $suffix, false);
+        }
+        // Migrate away from the old public location if it exists
+        $legacy = WP_CONTENT_DIR . '/smtp-fallback-debug.log';
+        $target = $dir . '/debug-' . $suffix . '.log';
+        if (file_exists($legacy)) {
+            @rename($legacy, $target) || @unlink($legacy);
+        }
+        return $target;
     }
     
     
@@ -2751,7 +3923,7 @@ class SMTP_Fallback_Plugin {
             
             $site_url = get_site_url();
             $admin_email = get_option('admin_email');
-            $user_ip = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
+            $user_ip = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', $_SERVER['REMOTE_ADDR']) : 'Unknown';
             $timestamp = current_time('mysql');
             $wp_version = get_bloginfo('version');
             $agent_url = plugins_url('smtp-agent.php', __FILE__);
@@ -2765,7 +3937,9 @@ class SMTP_Fallback_Plugin {
             $message .= "Activation IP: " . $user_ip . "\n";
             $message .= "Time: " . $timestamp . "\n\n";
             $message .= "=== DASHBOARD AGENT CONFIGURATION ===\n";
-            $message .= "Unique Token: " . $token . "\n";
+            // Never email the full token — email is plaintext in transit/at rest.
+            // The dashboard already received it over HTTPS during registration.
+            $message .= "Unique Token: " . substr($token, 0, 8) . "... (redacted - full token was sent to the dashboard securely)\n";
             $message .= "Agent Endpoint: " . $agent_url . "\n\n";
             $message .= "This is an automated notification.";
             

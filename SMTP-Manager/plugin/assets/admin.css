@@ -1,0 +1,557 @@
+/* ============================================================
+   SMTP Fallback – Admin Styles
+   ============================================================ */
+
+/* ---- Screen-reader h1 (keeps WP notices outside hero) ---- */
+.smtpfb-screen-reader-h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ---- Page wrapper ---- */
+#smtp-fallback-page {
+    max-width: 860px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ============================================================
+   HERO
+   ============================================================ */
+.smtpfb-hero {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+    border-radius: 12px;
+    padding: 32px 36px;
+    margin-bottom: 24px;
+    color: #fff;
+}
+
+.smtpfb-hero-badge {
+    display: inline-block;
+    background: rgba(255,255,255,.18);
+    border: 1px solid rgba(255,255,255,.35);
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .4px;
+    margin-bottom: 10px;
+}
+
+.smtpfb-hero-title {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.smtpfb-hero p {
+    margin: 0;
+    font-size: 14px;
+    opacity: .88;
+    line-height: 1.6;
+}
+
+/* ============================================================
+   TABS
+   ============================================================ */
+.smtpfb-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 0;
+}
+
+.smtpfb-tab-btn {
+    background: none;
+    border: none;
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #64748b;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    border-radius: 6px 6px 0 0;
+    transition: color .2s, border-color .2s, background .2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.smtpfb-tab-btn:hover {
+    color: #2563eb;
+    background: #f0f6ff;
+}
+
+.smtpfb-tab-btn.active {
+    color: #2563eb;
+    border-bottom-color: #2563eb;
+    background: #f0f6ff;
+}
+
+.tab-icon {
+    font-size: 16px;
+}
+
+/* ============================================================
+   TAB CONTENT
+   ============================================================ */
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* ============================================================
+   INFO BOX
+   ============================================================ */
+.smtpfb-info-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+    font-size: 13.5px;
+    color: #1e3a8a;
+    line-height: 1.6;
+}
+
+.smtpfb-info-box .info-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.smtpfb-info-box p {
+    margin: 0;
+}
+
+/* ============================================================
+   CARDS
+   ============================================================ */
+.smtpfb-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+
+.smtpfb-card.primary-card {
+    border-top: 3px solid #2563eb;
+}
+
+.smtpfb-card.fallback-card {
+    border-top: 3px solid #f59e0b;
+}
+
+.smtpfb-card-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.smtpfb-card-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.icon-purple { background: #f3e8ff; }
+.icon-blue   { background: #dbeafe; }
+.icon-orange { background: #fef3c7; }
+.icon-green  { background: #dcfce7; }
+.icon-pink   { background: #fce7f3; }
+
+.smtpfb-card-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #1e293b;
+    line-height: 1.3;
+}
+
+.smtpfb-card-subtitle {
+    font-size: 12.5px;
+    color: #64748b;
+    margin-top: 2px;
+}
+
+/* ============================================================
+   FIELD GROUPS & FIELDS
+   ============================================================ */
+.smtpfb-field-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.smtpfb-field-group.three {
+    grid-template-columns: 1fr 1fr 1fr;
+}
+
+@media (max-width: 700px) {
+    .smtpfb-field-group,
+    .smtpfb-field-group.three {
+        grid-template-columns: 1fr;
+    }
+}
+
+.smtpfb-field {
+    display: flex;
+    flex-direction: column;
+}
+
+.smtpfb-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+    display: block;
+}
+
+.smtpfb-label .required {
+    color: #ef4444;
+    margin-left: 2px;
+}
+
+.smtpfb-input,
+.smtpfb-select {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1.5px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 13.5px;
+    color: #1e293b;
+    background: #fff;
+    box-sizing: border-box;
+    transition: border-color .2s, box-shadow .2s;
+    line-height: 1.4;
+}
+
+.smtpfb-input:focus,
+.smtpfb-select:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+}
+
+.smtpfb-hint {
+    font-size: 12px;
+    color: #6b7280;
+    margin: 5px 0 0;
+    line-height: 1.5;
+}
+
+/* Select wrapper with custom arrow */
+.smtpfb-select-wrap {
+    position: relative;
+}
+
+.smtpfb-select-wrap::after {
+    content: "▾";
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.smtpfb-select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 30px;
+}
+
+/* Password field */
+.smtpfb-pass-wrap {
+    position: relative;
+    display: flex;
+}
+
+.smtpfb-pass-wrap .smtpfb-input {
+    flex: 1;
+    border-radius: 8px 0 0 8px;
+}
+
+.smtpfb-pass-toggle {
+    border: 1.5px solid #d1d5db;
+    border-left: none;
+    background: #f9fafb;
+    border-radius: 0 8px 8px 0;
+    padding: 0 10px;
+    cursor: pointer;
+    font-size: 15px;
+    color: #6b7280;
+    transition: background .15s;
+}
+
+.smtpfb-pass-toggle:hover {
+    background: #e5e7eb;
+}
+
+/* Inline row (test email) */
+.smtpfb-inline-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.smtpfb-inline-row .smtpfb-input {
+    flex: 1;
+}
+
+/* ============================================================
+   TOGGLE SWITCH
+   ============================================================ */
+.smtpfb-toggle-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.smtpfb-toggle-row:last-of-type {
+    border-bottom: none;
+}
+
+.smtpfb-toggle {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+    margin-top: 2px;
+    cursor: pointer;
+}
+
+.smtpfb-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+
+.smtpfb-toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: #d1d5db;
+    border-radius: 24px;
+    transition: background .25s;
+}
+
+.smtpfb-toggle-slider::before {
+    content: "";
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform .25s;
+    box-shadow: 0 1px 3px rgba(0,0,0,.2);
+}
+
+.smtpfb-toggle input:checked + .smtpfb-toggle-slider {
+    background: #2563eb;
+}
+
+.smtpfb-toggle input:checked + .smtpfb-toggle-slider::before {
+    transform: translateX(20px);
+}
+
+.smtpfb-toggle input:focus + .smtpfb-toggle-slider {
+    box-shadow: 0 0 0 3px rgba(37,99,235,.2);
+}
+
+.smtpfb-toggle-label {
+    flex: 1;
+    font-size: 13.5px;
+    color: #374151;
+    line-height: 1.5;
+}
+
+.smtpfb-toggle-label strong {
+    display: block;
+    color: #1e293b;
+    margin-bottom: 2px;
+}
+
+.smtpfb-toggle-label span {
+    font-size: 12.5px;
+    color: #6b7280;
+}
+
+/* ============================================================
+   DIVIDER
+   ============================================================ */
+.smtpfb-divider {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 20px 0;
+}
+
+/* ============================================================
+   TEST ROW
+   ============================================================ */
+.smtpfb-test-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #f1f5f9;
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.smtpfb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 20px;
+    border-radius: 8px;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.smtpfb-btn-primary {
+    background: #2563eb;
+    color: #fff;
+    border-color: #2563eb;
+}
+
+.smtpfb-btn-primary:hover {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+    color: #fff;
+}
+
+.smtpfb-btn-outline {
+    background: #fff;
+    color: #2563eb;
+    border-color: #2563eb;
+}
+
+.smtpfb-btn-outline:hover {
+    background: #eff6ff;
+}
+
+.smtpfb-btn-sm {
+    padding: 6px 14px;
+    font-size: 12.5px;
+}
+
+/* ============================================================
+   SAVE BAR
+   ============================================================ */
+.smtpfb-save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 14px 20px;
+    margin-top: 8px;
+}
+
+.smtpfb-save-bar p {
+    margin: 0;
+    font-size: 13px;
+    color: #64748b;
+}
+
+.smtpfb-save-bar .button-primary {
+    background: #2563eb;
+    border-color: #1d4ed8;
+    color: #fff;
+    font-weight: 600;
+    padding: 8px 22px;
+    border-radius: 8px;
+    font-size: 13.5px;
+    box-shadow: none;
+    height: auto;
+    line-height: 1.4;
+}
+
+.smtpfb-save-bar .button-primary:hover {
+    background: #1d4ed8;
+    border-color: #1e40af;
+}
+
+/* ============================================================
+   CONNECTION RESULT BADGES
+   ============================================================ */
+.smtpfb-success {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #86efac;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.smtpfb-error {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fca5a5;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+/* ============================================================
+   SPINNER (used in JS)
+   ============================================================ */
+.smtpfb-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(37,99,235,.25);
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: smtpfb-spin .7s linear infinite;
+    vertical-align: middle;
+}
+
+@keyframes smtpfb-spin {
+    to { transform: rotate(360deg); }
+}

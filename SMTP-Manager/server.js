@@ -1,6 +1,9 @@
-const express   = require('express');
-const axios     = require('axios');
-const { createClient } = require('@libsql/client/web');
+const express      = require('express');
+const axios        = require('axios');
+const cookieParser = require('cookie-parser');
+const { createClient } = process.env.TURSO_DATABASE_URL
+  ? require('@libsql/client/web')
+  : require('@libsql/client');
 const path      = require('path');
 const fs        = require('fs');
 const https     = require('https');
@@ -26,8 +29,11 @@ async function initDB() {
     last_ping    INTEGER DEFAULT 0,
     notes        TEXT    DEFAULT '',
     smtp_enabled INTEGER DEFAULT 1,
+    rest_url     TEXT    DEFAULT '',
     created_at   INTEGER DEFAULT (strftime('%s','now'))
   )`);
+  // Add rest_url column to existing DBs that predate this field
+  try { await db.execute(`ALTER TABLE sites ADD COLUMN rest_url TEXT DEFAULT ''`); } catch {};
   await db.execute(`CREATE TABLE IF NOT EXISTS alerts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     site_id    INTEGER,
@@ -50,7 +56,9 @@ async function initDB() {
   )`);
   try { await db.execute("ALTER TABLE sites ADD COLUMN smtp_enabled INTEGER DEFAULT 1"); } catch(_) {}
 
-  // Seed plugin files from disk into DB (runs on first deploy or when files are new)
+  // Seed plugin files from disk into DB.
+  // Refreshes the DB copy whenever the bundled file differs from what's stored,
+  // so every deploy automatically updates the files that get pushed to sites.
   const PLUGIN_DIR = path.join(__dirname, 'plugin');
   for (const filename of ['smtp.php', 'smtp-agent.php']) {
     const filePath = path.join(PLUGIN_DIR, filename);
@@ -58,11 +66,14 @@ async function initDB() {
       const content  = fs.readFileSync(filePath, 'utf8');
       const verMatch = content.match(/Version:\s*([^\n\r*]+)/);
       const version  = verMatch ? verMatch[1].trim() : 'unknown';
-      // Only seed if DB doesn't have it yet (don't overwrite manual uploads)
-      const existing = await db.execute({ sql: 'SELECT filename FROM plugin_files WHERE filename = ?', args: [filename] });
-      if (existing.rows.length === 0) {
-        await db.execute({ sql: 'INSERT INTO plugin_files (filename, content, version) VALUES (?, ?, ?)', args: [filename, content, version] });
-        console.log(`[PLUGIN] Seeded ${filename} v${version} into DB`);
+      const existing = await db.execute({ sql: 'SELECT content FROM plugin_files WHERE filename = ?', args: [filename] });
+      const dbContent = existing.rows.length ? existing.rows[0].content : null;
+      if (dbContent !== content) {
+        await db.execute({
+          sql: `INSERT OR REPLACE INTO plugin_files (filename, content, version, uploaded_at) VALUES (?, ?, ?, strftime('%s','now'))`,
+          args: [filename, content, version]
+        });
+        console.log(`[PLUGIN] ${dbContent === null ? 'Seeded' : 'Refreshed'} ${filename} v${version} in DB`);
       }
     }
   }
@@ -104,7 +115,128 @@ function now() { return Math.floor(Date.now() / 1000); }
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json());
+app.use(cookieParser());
+
+// ─── Auth — Stateless JWT (works on Vercel serverless, no in-memory state) ─────
+const ADMIN_USER     = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASS     = process.env.ADMIN_PASSWORD || 'smtp@admin2024';
+const JWT_SECRET     = process.env.SESSION_SECRET || 'smtp_fallback_session_secret_2024';
+const JWT_EXPIRES_IN = 7 * 24 * 60 * 60; // 7 days in seconds
+
+// Minimal JWT — sign/verify using HMAC-SHA256, no external package needed
+function base64url(str) {
+  return Buffer.from(str).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+}
+function createJWT(payload) {
+  const header  = base64url(JSON.stringify({ alg:'HS256', typ:'JWT' }));
+  const body    = base64url(JSON.stringify(payload));
+  const sig     = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64')
+                    .replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+  return `${header}.${body}.${sig}`;
+}
+function verifyJWT(token) {
+  try {
+    const [header, body, sig] = token.split('.');
+    const expected = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64')
+                      .replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+    if (sig !== expected) return null;
+    const payload = JSON.parse(Buffer.from(body, 'base64').toString());
+    if (payload.exp && payload.exp < Math.floor(Date.now()/1000)) return null;
+    return payload;
+  } catch { return null; }
+}
+function getBearerToken(req) {
+  const auth = req.headers.authorization || '';
+  return auth.startsWith('Bearer ') ? auth.slice(7) : null;
+}
+function getSession(req) {
+  // Check Authorization header first (API calls from app.js)
+  // Then fall back to cookie (browser page navigations)
+  const token = getBearerToken(req) || req.cookies?.smtp_auth;
+  if (!token) return null;
+  return verifyJWT(token);
+}
+
+// Public routes — no auth required
+// NOTE: do NOT add '/' here — startsWith('/') matches everything and breaks auth
+const PUBLIC_PATHS = [
+  '/api/login', '/api/heartbeat', '/api/register',
+  '/login', '/login.html',
+  '/index.html',            // landing page
+  '/style.css',             // dashboard styles (loaded by dashboard.html)
+];
+
+// Auth guard middleware
+function authMiddleware(req, res, next) {
+  // Landing page (root) is always public
+  if (req.path === '/') return next();
+  // Explicitly listed public paths
+  if (PUBLIC_PATHS.some(p => req.path === p)) return next();
+  // Static assets (.css, .js, images, fonts) are public
+  if (/\.(css|js|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot)$/.test(req.path)) return next();
+  // All /api/* routes except public ones require a valid JWT
+  if (req.path.startsWith('/api/')) {
+    const sess = getSession(req);
+    if (!sess) return res.status(401).json({ error: 'Unauthorized — please login' });
+  }
+  next();
+}
+
+// Cookie options — httpOnly prevents JS from reading it (XSS safe)
+const COOKIE_OPTS = {
+  httpOnly: true,
+  secure:   process.env.NODE_ENV !== 'development', // HTTPS only in production
+  sameSite: 'lax',
+  maxAge:   JWT_EXPIRES_IN * 1000, // milliseconds
+  path:     '/',
+};
+
+// ─── Auth endpoints ────────────────────────────────────────────────────────────
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (username === ADMIN_USER && password === ADMIN_PASS) {
+    const token = createJWT({
+      sub: username,
+      iat: Math.floor(Date.now()/1000),
+      exp: Math.floor(Date.now()/1000) + JWT_EXPIRES_IN
+    });
+    // Set cookie for browser page navigation auth
+    res.cookie('smtp_auth', token, COOKIE_OPTS);
+    return res.json({ success: true, token, username });
+  }
+  return res.status(401).json({ error: 'Invalid username or password' });
+});
+
+app.post('/api/logout', (_req, res) => {
+  res.clearCookie('smtp_auth', { path: '/' });
+  res.json({ success: true });
+});
+
+app.get('/api/me', (req, res) => {
+  const sess = getSession(req);
+  if (!sess) return res.status(401).json({ error: 'Not logged in' });
+  res.json({ username: sess.sub, expires: sess.exp * 1000 });
+});
+
+// Apply auth guard
+app.use(authMiddleware);
+
+// Serve static files AFTER auth check
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Redirect /login to login page
+app.get('/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
+
+// Auth guard for HTML pages — reads the httpOnly cookie set at login
+function authRequired(req, res, next) {
+  const sess = getSession(req); // reads cookie automatically via cookieParser
+  if (!sess) return res.redirect('/login');
+  next();
+}
+
+// Dashboard — protected by cookie-based auth
+app.get('/dashboard', authRequired, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
+
 app.use(async (_req, _res, next) => {
   try {
     await ensureDB();
@@ -121,19 +253,93 @@ const agentHttp = axios.create({
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 });
 
-async function callAgent(site, action, method = 'GET', body = null) {
-  const url = `${site.agent_url}?action=${action}`;
-  const cfg = {
-    method, url,
-    headers: {
-      'X-Agent-Token':  site.api_token,
-      'Content-Type':   'application/json',
-      'Accept':         'application/json'
-    }
-  };
+// Safely encode a URL that may have spaces in path segments (e.g. "SMTP Plugin Final")
+function encodeAgentUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    u.pathname = u.pathname.split('/').map(seg => encodeURIComponent(decodeURIComponent(seg))).join('/');
+    return u.toString();
+  } catch {
+    return encodeURI(rawUrl);
+  }
+}
+
+// Build the REST API agent URL from a site's base URL
+// e.g. https://example.com → https://example.com/wp-json/smtp-fallback/v1/agent
+function restAgentUrl(site) {
+  const base = (site.rest_url || (site.url.replace(/\/+$/, '') + '/wp-json/smtp-fallback/v1/agent'));
+  return base;
+}
+
+// Make one HTTP attempt to a given url+method+headers+body
+async function httpAttempt(url, method, headers, body) {
+  const cfg = { method, url, headers };
   if (body) cfg.data = body;
   const res = await agentHttp(cfg);
   return res.data;
+}
+
+function friendlyError(err) {
+  if (err.response) {
+    const code = err.response.status;
+    if (code === 403) return new Error(`Blocked by firewall (403) — Cloudflare/WAF is blocking the request.`);
+    if (code === 404) return new Error(`Not found (404) — agent endpoint missing. Use Push Update or check the Agent URL.`);
+    if (code === 401) return new Error(`Unauthorized (401) — API token mismatch.`);
+    if (code === 500) return new Error(`Server error (500) — WordPress site has an internal error.`);
+    return new Error(`HTTP ${code} from site.`);
+  }
+  if (err.code === 'ECONNREFUSED') return new Error(`Connection refused — site server is down.`);
+  if (err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED') return new Error(`Connection timed out — site is slow or unreachable.`);
+  if (err.code === 'ENOTFOUND') return new Error(`Domain not found — DNS lookup failed. Site domain may have expired.`);
+  return err;
+}
+
+async function callAgent(site, action, method = 'GET', body = null) {
+  const siteOrigin = (() => { try { return new URL(site.url).origin; } catch { return site.url; } })();
+
+  const headers = {
+    'X-Agent-Token':   site.api_token,
+    'Content-Type':    'application/json',
+    'Accept':          'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control':   'no-cache',
+    'Origin':          siteOrigin,
+    'Referer':         siteOrigin + '/',
+    'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+  };
+
+  // ── Attempt 1: WordPress REST API (/wp-json/smtp-fallback/v1/agent)
+  // Cloudflare & Wordfence always whitelist /wp-json/ traffic
+  const restUrl = `${restAgentUrl(site)}?action=${action}`;
+  try {
+    return await httpAttempt(restUrl, method, headers, body);
+  } catch (restErr) {
+    const restCode = restErr.response?.status;
+    // Only fall through if REST is not available (404/not installed) or blocked (403/500)
+    // If it's a token error (401) that's definitive — don't try the other URL
+    if (restCode === 401) throw friendlyError(restErr);
+
+    // ── Attempt 2: Direct agent file (smtp-agent.php) — URL-encoded path
+    const encodedBase = encodeAgentUrl(site.agent_url);
+    const directUrl = `${encodedBase}?action=${action}`;
+    try {
+      return await httpAttempt(directUrl, method, headers, body);
+    } catch (directErr) {
+      // Both failed — throw the most descriptive error
+      throw friendlyError(directErr);
+    }
+  }
+}
+
+// Insert alert only if no unresolved alert of same type already exists for this site
+async function createAlertIfNew(site_id, type, message) {
+  const existing = await dbGet(
+    'SELECT id FROM alerts WHERE site_id=? AND type=? AND resolved=0 LIMIT 1',
+    [site_id, type]
+  );
+  if (!existing) {
+    await dbRun('INSERT INTO alerts (site_id, type, message) VALUES (?, ?, ?)', [site_id, type, message]);
+  }
 }
 
 async function getSite(id) {
@@ -195,11 +401,12 @@ app.post('/api/sites/:id/ping', wrap(async (req, res) => {
   try {
     const data = await callAgent(site, 'ping');
     await dbRun("UPDATE sites SET status='online', last_ping=? WHERE id=?", [now(), site.id]);
+    // Auto-resolve any existing offline alert when site comes back online
+    await dbRun("UPDATE alerts SET resolved=1 WHERE site_id=? AND type='offline' AND resolved=0", [site.id]);
     res.json({ status: 'online', data });
   } catch (err) {
     await dbRun("UPDATE sites SET status='offline', last_ping=? WHERE id=?", [now(), site.id]);
-    await dbRun('INSERT INTO alerts (site_id, type, message) VALUES (?, ?, ?)',
-      [site.id, 'offline', `${site.name} is offline: ${err.message}`]);
+    await createAlertIfNew(site.id, 'offline', `${site.name} is offline: ${err.message}`);
     res.json({ status: 'offline', error: err.message });
   }
 }));
@@ -212,9 +419,11 @@ app.post('/api/sites/ping-all', async (req, res) => {
     try {
       const data = await callAgent(site, 'ping');
       await dbRun("UPDATE sites SET status='online', last_ping=? WHERE id=?", [now(), site.id]);
+      await dbRun("UPDATE alerts SET resolved=1 WHERE site_id=? AND type='offline' AND resolved=0", [site.id]);
       results.push({ id: site.id, name: site.name, status: 'online', data });
     } catch (err) {
       await dbRun("UPDATE sites SET status='offline', last_ping=? WHERE id=?", [now(), site.id]);
+      await createAlertIfNew(site.id, 'offline', `${site.name} is offline: ${err.message}`);
       results.push({ id: site.id, name: site.name, status: 'offline', error: err.message });
     }
   }
@@ -424,6 +633,29 @@ app.post('/api/updates/push-all', async (req, res) => {
     }
   }
   res.json(results);
+});
+
+// ─── Heartbeat endpoint ────────────────────────────────────────────────────────
+// WordPress pushes status here every 5 min via WP Cron (outbound — never blocked by firewalls)
+app.post('/api/heartbeat', async (req, res) => {
+  const { api_token, site_url, site_name, rest_url, smtp_enabled } = req.body || {};
+  if (!api_token) return res.status(400).json({ error: 'api_token required' });
+
+  const site = await dbGet('SELECT * FROM sites WHERE api_token = ?', [api_token]);
+  if (!site) return res.status(404).json({ error: 'Site not found — register first' });
+
+  // Update status to online and save the REST URL for future polling
+  await dbRun(
+    "UPDATE sites SET status='online', last_ping=?, rest_url=?, smtp_enabled=? WHERE id=?",
+    [now(), rest_url || site.rest_url || '', smtp_enabled ? 1 : 0, site.id]
+  );
+  // Auto-resolve any active offline alert
+  await dbRun(
+    "UPDATE alerts SET resolved=1 WHERE site_id=? AND type='offline' AND resolved=0",
+    [site.id]
+  );
+
+  res.json({ success: true, message: 'Heartbeat received', site_id: site.id });
 });
 
 // ─── Auto-Registration endpoint (called by WordPress plugin on activation) ────

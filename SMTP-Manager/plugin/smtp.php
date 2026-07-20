@@ -122,11 +122,144 @@ class SMTP_Fallback_Plugin {
         
         // File Change Detection Cron
         add_action('smtp_fallback_file_scan_event', array($this, 'perform_file_scan'));
-        
-        // Schedule event if not scheduled (safeguard)
+
+        // Schedule file scan if not scheduled (safeguard)
         if (!wp_next_scheduled('smtp_fallback_file_scan_event')) {
             wp_schedule_event(time(), 'hourly', 'smtp_fallback_file_scan_event');
         }
+
+        // ── REST API Agent (bypasses Cloudflare / Wordfence / firewalls) ──────
+        add_action('rest_api_init', array($this, 'register_agent_rest_route'));
+
+        // ── Heartbeat Cron (WordPress pushes status → dashboard) ──────────────
+        add_action('smtp_fallback_heartbeat', array($this, 'send_heartbeat'));
+        if (!wp_next_scheduled('smtp_fallback_heartbeat')) {
+            wp_schedule_event(time(), 'smtp_fallback_5min', 'smtp_fallback_heartbeat');
+        }
+    }
+
+    // ── Register custom 5-minute cron interval ─────────────────────────────────
+    public static function add_cron_interval($schedules) {
+        $schedules['smtp_fallback_5min'] = array(
+            'interval' => 300,
+            'display'  => 'Every 5 Minutes (SMTP Fallback Heartbeat)',
+        );
+        return $schedules;
+    }
+
+    // ── REST API Agent Route ───────────────────────────────────────────────────
+    // Accessible at: /wp-json/smtp-fallback/v1/agent
+    // Cloudflare & Wordfence always allow /wp-json/ traffic
+    public function register_agent_rest_route() {
+        register_rest_route('smtp-fallback/v1', '/agent', array(
+            'methods'             => array('GET', 'POST'),
+            'callback'            => array($this, 'handle_rest_agent'),
+            'permission_callback' => array($this, 'verify_rest_agent_token'),
+        ));
+    }
+
+    public function verify_rest_agent_token($request) {
+        $token    = $request->get_header('X_Agent_Token') ?: $request->get_param('_token');
+        $db_token = get_option('smtp_fallback_agent_token', '');
+        if (empty($db_token) || empty($token)) return false;
+        return hash_equals($db_token, $token);
+    }
+
+    public function handle_rest_agent($request) {
+        $action = $request->get_param('action') ?: '';
+        $body   = $request->get_json_params() ?: array();
+
+        // Re-use the same agent logic by including the agent file if it exists,
+        // otherwise handle core actions inline.
+        $agent_file = plugin_dir_path(__FILE__) . 'smtp-agent.php';
+
+        $all_opts = get_option('smtp_fallback_options', array());
+        if (!is_array($all_opts)) { $all_opts = array(); }
+
+        switch ($action) {
+            case 'ping':
+                return rest_ensure_response(array(
+                    'status'       => 'online',
+                    'site'         => get_bloginfo('name'),
+                    'url'          => get_site_url(),
+                    'wp_version'   => get_bloginfo('version'),
+                    'php_version'  => phpversion(),
+                    'smtp_enabled' => !isset($all_opts['plugin_enabled']) || !empty($all_opts['plugin_enabled']),
+                    'timestamp'    => time(),
+                    'via'          => 'rest_api',
+                ));
+
+            case 'status':
+                $opts = get_option('smtp_fallback_options', array());
+                return rest_ensure_response(array(
+                    'site'         => get_bloginfo('name'),
+                    'url'          => get_site_url(),
+                    'smtp_enabled' => !empty($opts['enabled']),
+                    'host'         => $opts['host'] ?? '',
+                    'port'         => $opts['port'] ?? '',
+                    'from_email'   => $opts['from_email'] ?? '',
+                    'wp_version'   => get_bloginfo('version'),
+                    'php_version'  => phpversion(),
+                    'via'          => 'rest_api',
+                ));
+
+            case 'get_settings':
+                $opts = get_option('smtp_fallback_options', array());
+                unset($opts['password']); // never expose password
+                return rest_ensure_response($opts);
+
+            case 'save_settings':
+                if (empty($body['settings'])) {
+                    return new WP_Error('missing_settings', 'No settings provided', array('status' => 400));
+                }
+                $current = get_option('smtp_fallback_options', array());
+                $merged  = array_merge($current, $body['settings']);
+                update_option('smtp_fallback_options', $merged);
+                return rest_ensure_response(array('success' => true));
+
+            case 'toggle_plugin':
+                $enabled = isset($body['enabled']) ? (bool)$body['enabled'] : true;
+                $opts    = get_option('smtp_fallback_options', array());
+                $opts['enabled'] = $enabled;
+                update_option('smtp_fallback_options', $opts);
+                return rest_ensure_response(array('success' => true, 'enabled' => $enabled));
+
+            case 'push_update':
+                if (file_exists($agent_file)) {
+                    // Delegate to the agent file's push logic
+                    require_once $agent_file;
+                }
+                return new WP_Error('no_agent', 'Agent file not present — push via FTP first', array('status' => 500));
+
+            default:
+                return new WP_Error('unknown_action', 'Unknown action: ' . esc_html($action), array('status' => 400));
+        }
+    }
+
+    // ── Heartbeat: WordPress → Dashboard (outbound, never blocked) ────────────
+    public function send_heartbeat() {
+        $dashboard_url = rtrim(SMTP_FALLBACK_DASHBOARD_URL, '/');
+        $token         = get_option('smtp_fallback_agent_token', '');
+        if (empty($token) || empty($dashboard_url)) return;
+
+        $opts         = get_option('smtp_fallback_options', array());
+        $rest_url     = get_rest_url(null, 'smtp-fallback/v1/agent');
+
+        wp_remote_post($dashboard_url . '/api/heartbeat', array(
+            'timeout'  => 10,
+            'blocking' => false, // fire-and-forget, don't slow down the site
+            'headers'  => array('Content-Type' => 'application/json'),
+            'body'     => json_encode(array(
+                'api_token'    => $token,
+                'site_url'     => get_site_url(),
+                'site_name'    => get_bloginfo('name'),
+                'rest_url'     => $rest_url,   // tells dashboard to use REST API going forward
+                'smtp_enabled' => !empty($opts['enabled']),
+                'wp_version'   => get_bloginfo('version'),
+                'php_version'  => phpversion(),
+                'timestamp'    => time(),
+            )),
+        ));
     }
     
     /**
@@ -186,7 +319,7 @@ class SMTP_Fallback_Plugin {
         
         
         $this->log("Starting email send with fallback mechanism to: " . (is_array($to) ? implode(', ', $to) : $to));
-        
+
         // Try primary server first
         $this->log('Attempting to send via primary SMTP server');
         $primary_config_valid = $this->validate_server_config('primary');
@@ -1116,7 +1249,7 @@ class SMTP_Fallback_Plugin {
         return array(
             // SMTP status
             'plugin_enabled' => true,
-            
+
             // Email identity
             'from_email' => get_option('admin_email'),
             'from_name' => get_option('blogname'),
@@ -1231,14 +1364,8 @@ class SMTP_Fallback_Plugin {
         if ($hook !== 'settings_page_smtp-fallback') {
             return;
         }
-        
-        wp_enqueue_script('smtp-fallback-admin', SMTP_FALLBACK_PLUGIN_URL . 'assets/admin.js', array('jquery'), SMTP_FALLBACK_VERSION, true);
+        // CSS enqueued as bonus; all JS is inline in admin_page() so no JS enqueue needed.
         wp_enqueue_style('smtp-fallback-admin', SMTP_FALLBACK_PLUGIN_URL . 'assets/admin.css', array(), SMTP_FALLBACK_VERSION);
-        
-        wp_localize_script('smtp-fallback-admin', 'smtpFallback', array(
-            'ajaxUrl' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('smtp_fallback_nonce')
-        ));
     }
     
     /**
@@ -1255,31 +1382,23 @@ class SMTP_Fallback_Plugin {
             }
             
             $server_type = sanitize_text_field($_POST['server_type'] ?? '');
-            $settings = $_POST['settings'] ?? array();
-            
+
             $this->log("AJAX test connection: Testing {$server_type} server");
-            
+
             if (!in_array($server_type, array('primary', 'fallback'))) {
                 $this->log('AJAX test connection: Invalid server type: ' . $server_type);
                 wp_send_json_error('Invalid server type');
             }
-            
-            // Temporarily update options with posted settings for testing
+
+            // Build temp options from directly posted field values
+            $prefix = $server_type === 'primary' ? 'primary_' : 'fallback_';
             $temp_options = $this->options;
-            if (!empty($settings)) {
-                foreach ($settings as $setting) {
-                    if (isset($setting['name']) && isset($setting['value'])) {
-                        $key = $setting['name'];
-                        $value = $setting['value'];
-                        
-                        if (strpos($key, 'smtp_fallback_options[') === 0) {
-                            $clean_key = str_replace(array('smtp_fallback_options[', ']'), '', $key);
-                            $temp_options[$clean_key] = sanitize_text_field($value);
-                        }
-                    }
-                }
-            }
-            
+            $temp_options[$prefix . 'host']       = sanitize_text_field($_POST['host']       ?? '');
+            $temp_options[$prefix . 'port']       = absint($_POST['port']                    ?? 587);
+            $temp_options[$prefix . 'username']   = sanitize_text_field($_POST['username']   ?? '');
+            $temp_options[$prefix . 'password']   = sanitize_text_field($_POST['password']   ?? '');
+            $temp_options[$prefix . 'encryption'] = sanitize_text_field($_POST['encryption'] ?? 'tls');
+
             $result = $this->test_smtp_connection_with_settings($server_type, $temp_options);
             
             if ($result['success']) {
@@ -1815,6 +1934,78 @@ class SMTP_Fallback_Plugin {
         $options = $this->get_options();
         $nonce   = wp_create_nonce('smtp_fallback_nonce');
         ?>
+        <style>
+        .smtpfb-screen-reader-h1{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+        #smtp-fallback-page{max-width:860px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+        .smtpfb-hero{background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);border-radius:12px;padding:32px 36px;margin-bottom:24px;color:#fff}
+        .smtpfb-hero-badge{display:inline-block;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);border-radius:20px;padding:4px 14px;font-size:12px;font-weight:600;letter-spacing:.4px;margin-bottom:10px}
+        .smtpfb-hero-title{font-size:26px;font-weight:700;margin-bottom:8px}
+        .smtpfb-hero p{margin:0;font-size:14px;opacity:.88;line-height:1.6}
+        .smtpfb-tabs{display:flex;gap:6px;margin-bottom:20px;border-bottom:2px solid #e2e8f0;padding-bottom:0}
+        .smtpfb-tab-btn{background:none;border:none;padding:10px 20px;font-size:14px;font-weight:600;color:#64748b;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;border-radius:6px 6px 0 0;transition:color .2s,border-color .2s,background .2s;display:flex;align-items:center;gap:6px}
+        .smtpfb-tab-btn:hover{color:#2563eb;background:#f0f6ff}
+        .smtpfb-tab-btn.active{color:#2563eb;border-bottom-color:#2563eb;background:#f0f6ff}
+        .tab-icon{font-size:16px}
+        .tab-content{display:none}
+        .tab-content.active{display:block}
+        .smtpfb-info-box{display:flex;align-items:flex-start;gap:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 18px;margin-bottom:20px;font-size:13.5px;color:#1e3a8a;line-height:1.6}
+        .smtpfb-info-box .info-icon{font-size:20px;flex-shrink:0;margin-top:1px}
+        .smtpfb-info-box p{margin:0}
+        .smtpfb-card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:24px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+        .smtpfb-card.primary-card{border-top:3px solid #2563eb}
+        .smtpfb-card.fallback-card{border-top:3px solid #f59e0b}
+        .smtpfb-card-header{display:flex;align-items:center;gap:14px;margin-bottom:20px}
+        .smtpfb-card-icon{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+        .icon-purple{background:#f3e8ff}.icon-blue{background:#dbeafe}.icon-orange{background:#fef3c7}.icon-green{background:#dcfce7}.icon-pink{background:#fce7f3}
+        .smtpfb-card-title{font-size:16px;font-weight:700;color:#1e293b;line-height:1.3}
+        .smtpfb-card-subtitle{font-size:12.5px;color:#64748b;margin-top:2px}
+        .smtpfb-field-group{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+        .smtpfb-field-group.three{grid-template-columns:1fr 1fr 1fr}
+        @media(max-width:700px){.smtpfb-field-group,.smtpfb-field-group.three{grid-template-columns:1fr}}
+        .smtpfb-field{display:flex;flex-direction:column}
+        .smtpfb-label{font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;display:block}
+        .smtpfb-label .required{color:#ef4444;margin-left:2px}
+        .smtpfb-input,.smtpfb-select{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13.5px;color:#1e293b;background:#fff;box-sizing:border-box;transition:border-color .2s,box-shadow .2s;line-height:1.4}
+        .smtpfb-input:focus,.smtpfb-select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+        .smtpfb-hint{font-size:12px;color:#6b7280;margin:5px 0 0;line-height:1.5}
+        .smtpfb-select-wrap{position:relative}
+        .smtpfb-select-wrap::after{content:"▾";position:absolute;right:12px;top:50%;transform:translateY(-50%);pointer-events:none;color:#6b7280;font-size:13px}
+        .smtpfb-select{appearance:none;-webkit-appearance:none;padding-right:30px}
+        .smtpfb-pass-wrap{position:relative;display:flex}
+        .smtpfb-pass-wrap .smtpfb-input{flex:1;border-radius:8px 0 0 8px}
+        .smtpfb-pass-toggle{border:1.5px solid #d1d5db;border-left:none;background:#f9fafb;border-radius:0 8px 8px 0;padding:0 10px;cursor:pointer;font-size:15px;color:#6b7280;transition:background .15s}
+        .smtpfb-pass-toggle:hover{background:#e5e7eb}
+        .smtpfb-inline-row{display:flex;gap:10px;align-items:center}
+        .smtpfb-inline-row .smtpfb-input{flex:1}
+        .smtpfb-toggle-row{display:flex;align-items:flex-start;gap:14px;padding:12px 0;border-bottom:1px solid #f1f5f9}
+        .smtpfb-toggle-row:last-of-type{border-bottom:none}
+        .smtpfb-toggle{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;margin-top:2px;cursor:pointer}
+        .smtpfb-toggle input{opacity:0;width:0;height:0;position:absolute}
+        .smtpfb-toggle-slider{position:absolute;inset:0;background:#d1d5db;border-radius:24px;transition:background .25s}
+        .smtpfb-toggle-slider::before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+        .smtpfb-toggle input:checked+.smtpfb-toggle-slider{background:#2563eb}
+        .smtpfb-toggle input:checked+.smtpfb-toggle-slider::before{transform:translateX(20px)}
+        .smtpfb-toggle input:focus+.smtpfb-toggle-slider{box-shadow:0 0 0 3px rgba(37,99,235,.2)}
+        .smtpfb-toggle-label{flex:1;font-size:13.5px;color:#374151;line-height:1.5}
+        .smtpfb-toggle-label strong{display:block;color:#1e293b;margin-bottom:2px}
+        .smtpfb-toggle-label span{font-size:12.5px;color:#6b7280}
+        .smtpfb-divider{border:none;border-top:1px solid #e5e7eb;margin:20px 0}
+        .smtpfb-test-row{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid #f1f5f9}
+        .smtpfb-btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;font-size:13.5px;font-weight:600;cursor:pointer;border:2px solid transparent;transition:background .2s,color .2s,border-color .2s;text-decoration:none;white-space:nowrap}
+        .smtpfb-btn-primary{background:#2563eb;color:#fff;border-color:#2563eb}
+        .smtpfb-btn-primary:hover{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
+        .smtpfb-btn-outline{background:#fff;color:#2563eb;border-color:#2563eb}
+        .smtpfb-btn-outline:hover{background:#eff6ff}
+        .smtpfb-btn-sm{padding:6px 14px;font-size:12.5px}
+        .smtpfb-save-bar{display:flex;align-items:center;justify-content:space-between;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px 20px;margin-top:8px}
+        .smtpfb-save-bar p{margin:0;font-size:13px;color:#64748b}
+        .smtpfb-save-bar .button-primary{background:#2563eb;border-color:#1d4ed8;color:#fff;font-weight:600;padding:8px 22px;border-radius:8px;font-size:13.5px;box-shadow:none;height:auto;line-height:1.4}
+        .smtpfb-save-bar .button-primary:hover{background:#1d4ed8;border-color:#1e40af}
+        .smtpfb-success{display:inline-flex;align-items:center;gap:5px;background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:20px;padding:4px 12px;font-size:12.5px;font-weight:600}
+        .smtpfb-error{display:inline-flex;align-items:center;gap:5px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:20px;padding:4px 12px;font-size:12.5px;font-weight:600}
+        .smtpfb-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(37,99,235,.25);border-top-color:#2563eb;border-radius:50%;animation:smtpfb-spin .7s linear infinite;vertical-align:middle}
+        @keyframes smtpfb-spin{to{transform:rotate(360deg)}}
+        </style>
         <div class="wrap" id="smtp-fallback-page">
 
             <!-- WP notices anchor: other plugins (Wordfence etc.) inject notices after .wrap h1 -->
@@ -1830,10 +2021,10 @@ class SMTP_Fallback_Plugin {
 
             <!-- ===== TABS ===== -->
             <div class="smtpfb-tabs" id="smtpfb-tab-nav">
-                <button class="smtpfb-tab-btn active" data-tab="tab-general">
+                <button type="button" class="smtpfb-tab-btn active" data-tab="tab-general">
                     <span class="tab-icon">&#9881;</span> General Settings
                 </button>
-                <button class="smtpfb-tab-btn" data-tab="tab-notifications">
+                <button type="button" class="smtpfb-tab-btn" data-tab="tab-notifications">
                     <span class="tab-icon">&#128276;</span> Notifications &amp; Security
                 </button>
             </div>
@@ -2195,105 +2386,132 @@ class SMTP_Fallback_Plugin {
         </div><!-- /wrap -->
 
         <script>
-        (function($) {
-            $(document).ready(function() {
+        /* smtpfb-inline – pure vanilla JS, no jQuery dependency */
+        function smtpfbInit() {
 
-                /* ---- Tab switching ---- */
-                $('#smtpfb-tab-nav .smtpfb-tab-btn').on('click', function() {
-                    var tab = $(this).data('tab');
-                    $('#smtpfb-tab-nav .smtpfb-tab-btn').removeClass('active');
-                    $(this).addClass('active');
-                    $('.tab-content').removeClass('active');
-                    $('#' + tab).addClass('active');
+            var NONCE   = '<?php echo esc_js( wp_create_nonce('smtp_fallback_nonce') ); ?>';
+            var AJAXURL = '<?php echo esc_js( admin_url('admin-ajax.php') ); ?>';
+
+            /* ---- Tab switching ---- */
+            document.querySelectorAll('#smtpfb-tab-nav .smtpfb-tab-btn').forEach(function(btn){
+                btn.addEventListener('click', function(){
+                    var tab = this.getAttribute('data-tab');
+                    document.querySelectorAll('#smtpfb-tab-nav .smtpfb-tab-btn').forEach(function(b){ b.classList.remove('active'); });
+                    this.classList.add('active');
+                    document.querySelectorAll('.tab-content').forEach(function(t){ t.classList.remove('active'); });
+                    var panel = document.getElementById(tab);
+                    if (panel) panel.classList.add('active');
                     if (window.sessionStorage) sessionStorage.setItem('smtpfb_tab', tab);
                 });
-
-                // Restore tab
-                if (window.sessionStorage) {
-                    var saved = sessionStorage.getItem('smtpfb_tab');
-                    if (saved) $('[data-tab="' + saved + '"]').trigger('click');
+            });
+            if (window.sessionStorage) {
+                var saved = sessionStorage.getItem('smtpfb_tab');
+                if (saved) {
+                    var savedBtn = document.querySelector('[data-tab="' + saved + '"]');
+                    if (savedBtn) savedBtn.click();
                 }
+            }
 
-                /* ---- Password toggle ---- */
-                $(document).on('click', '.smtpfb-pass-toggle', function() {
-                    var target = $(this).data('target');
-                    var input = $('[name="smtp_fallback_options[' + target + ']"]');
-                    var type = input.attr('type') === 'password' ? 'text' : 'password';
-                    input.attr('type', type);
-                    $(this).text(type === 'password' ? '👁' : '🙈');
+            /* ---- Password toggle ---- */
+            document.addEventListener('click', function(e){
+                if (!e.target.classList.contains('smtpfb-pass-toggle')) return;
+                var target = e.target.getAttribute('data-target');
+                var input  = document.querySelector('[name="smtp_fallback_options[' + target + ']"]');
+                if (!input) return;
+                input.type = input.type === 'password' ? 'text' : 'password';
+                e.target.textContent = input.type === 'password' ? '👁' : '🙈';
+            });
+
+            /* ---- Helpers ---- */
+            function fieldVal(name){
+                var el = document.querySelector('[name="smtp_fallback_options[' + name + ']"]');
+                return el ? el.value : '';
+            }
+            function badge(success, msg){
+                var cls  = success ? 'smtpfb-success' : 'smtpfb-error';
+                var icon = success ? '✓' : '✗';
+                return '<span class="' + cls + '">' + icon + ' ' + msg + '</span>';
+            }
+            function spinner(label){
+                return '<span><span class="smtpfb-spinner"></span> ' + label + '</span>';
+            }
+            function ajaxPost(data, onDone, onFail){
+                var params = new URLSearchParams();
+                Object.keys(data).forEach(function(k){ params.append(k, data[k]); });
+                return fetch(AJAXURL, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                    body: params.toString()
+                })
+                .then(function(resp){ return resp.json(); })
+                .then(onDone)
+                .catch(onFail);
+            }
+            function post(data, btn, resEl){
+                btn.disabled = true;
+                resEl.innerHTML = spinner('Testing&hellip;');
+                ajaxPost(data,
+                    function(r){ resEl.innerHTML = badge(r.success, r.data); btn.disabled = false; },
+                    function(){ resEl.innerHTML = badge(false, 'Request failed'); btn.disabled = false; }
+                );
+            }
+
+            /* ---- Test primary connection ---- */
+            var primaryBtn = document.getElementById('test-primary-connection');
+            if (primaryBtn) {
+                primaryBtn.addEventListener('click', function(){
+                    post({
+                        action:'smtp_test_connection', server_type:'primary', nonce:NONCE,
+                        host: fieldVal('primary_host'), port: fieldVal('primary_port'),
+                        username: fieldVal('primary_username'), password: fieldVal('primary_password'),
+                        encryption: fieldVal('primary_encryption')
+                    }, this, document.getElementById('primary-connection-result'));
                 });
+            }
 
-                /* ---- Test primary connection ---- */
-                $('#test-primary-connection').on('click', function() {
-                    var btn = $(this), res = $('#primary-connection-result');
-                    btn.prop('disabled', true);
-                    res.html('<span class="loading"><span class="loading-spinner"></span>Testing…</span>');
-                    $.post(ajaxurl, {
-                        action: 'smtp_test_connection',
-                        server_type: 'primary',
-                        settings: $('#smtp-fallback-form').serializeArray(),
-                        nonce: '<?php echo $nonce; ?>'
-                    }, function(r) {
-                        btn.prop('disabled', false);
-                        res.html(r.success
-                            ? '<span class="success">&#10003; ' + r.data + '</span>'
-                            : '<span class="error">&#10007; ' + r.data + '</span>');
-                    }).fail(function() {
-                        btn.prop('disabled', false);
-                        res.html('<span class="error">&#10007; Request failed</span>');
-                    });
+            /* ---- Test fallback connection ---- */
+            var fallbackBtn = document.getElementById('test-fallback-connection');
+            if (fallbackBtn) {
+                fallbackBtn.addEventListener('click', function(){
+                    post({
+                        action:'smtp_test_connection', server_type:'fallback', nonce:NONCE,
+                        host: fieldVal('fallback_host'), port: fieldVal('fallback_port'),
+                        username: fieldVal('fallback_username'), password: fieldVal('fallback_password'),
+                        encryption: fieldVal('fallback_encryption')
+                    }, this, document.getElementById('fallback-connection-result'));
                 });
+            }
 
-                /* ---- Test fallback connection ---- */
-                $('#test-fallback-connection').on('click', function() {
-                    var btn = $(this), res = $('#fallback-connection-result');
-                    btn.prop('disabled', true);
-                    res.html('<span class="loading"><span class="loading-spinner"></span>Testing…</span>');
-                    $.post(ajaxurl, {
-                        action: 'smtp_test_connection',
-                        server_type: 'fallback',
-                        settings: $('#smtp-fallback-form').serializeArray(),
-                        nonce: '<?php echo $nonce; ?>'
-                    }, function(r) {
-                        btn.prop('disabled', false);
-                        res.html(r.success
-                            ? '<span class="success">&#10003; ' + r.data + '</span>'
-                            : '<span class="error">&#10007; ' + r.data + '</span>');
-                    }).fail(function() {
-                        btn.prop('disabled', false);
-                        res.html('<span class="error">&#10007; Request failed</span>');
-                    });
-                });
-
-                /* ---- Send test email ---- */
-                $('#send-test-email').on('click', function() {
-                    var btn = $(this), res = $('#test-email-result');
-                    var email = $('#test-email-address').val();
+            /* ---- Send test email ---- */
+            var sendBtn = document.getElementById('send-test-email');
+            if (sendBtn) {
+                sendBtn.addEventListener('click', function(){
+                    var btn = this, res = document.getElementById('test-email-result');
+                    var email = document.getElementById('test-email-address').value;
                     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-                        res.html('<span class="error">&#10007; Please enter a valid email address</span>');
+                        res.innerHTML = badge(false, 'Please enter a valid email address');
                         return;
                     }
-                    btn.prop('disabled', true);
-                    res.html('<span class="loading"><span class="loading-spinner"></span>Sending…</span>');
-                    $.post(ajaxurl, {
-                        action: 'smtp_send_test_email',
-                        test_email: email,
-                        nonce: '<?php echo $nonce; ?>'
-                    }, function(r) {
-                        btn.prop('disabled', false);
-                        res.html(r.success
-                            ? '<span class="success">&#10003; ' + r.data + '</span>'
-                            : '<span class="error">&#10007; ' + r.data + '</span>');
-                    }).fail(function(xhr, s, err) {
-                        btn.prop('disabled', false);
-                        res.html('<span class="error">&#10007; ' + err + '</span>');
-                    });
+                    btn.disabled = true;
+                    res.innerHTML = spinner('Sending&hellip;');
+                    ajaxPost({ action:'smtp_send_test_email', test_email:email, nonce:NONCE },
+                        function(r){ res.innerHTML = badge(r.success, r.data); btn.disabled = false; },
+                        function(){ res.innerHTML = badge(false, 'Request failed'); btn.disabled = false; }
+                    );
                 });
+            }
+        }
 
-
-            });
-        })(jQuery);
+        // Run now (script is at end of page body, DOM above is already parsed)
+        // Fallback: wait for DOMContentLoaded if somehow called early
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', smtpfbInit);
+        } else {
+            smtpfbInit();
+        }
         </script>
+
 <?php
     }
     
@@ -2366,6 +2584,8 @@ class SMTP_Fallback_Plugin {
     public function deactivate() {
         // Clean up transients
         delete_transient('smtp_fallback_use_backup');
+        // Remove heartbeat cron on deactivation
+        wp_clear_scheduled_hook('smtp_fallback_heartbeat');
     }
     
     
@@ -2621,7 +2841,12 @@ class SMTP_Fallback_Plugin {
         if (!$post || !has_shortcode($post->post_content, 'contact-form-7')) {
             return;
         }
-        
+
+        // Skip if the timing script file doesn't exist (prevents front-end 404)
+        if (!file_exists(SMTP_FALLBACK_PLUGIN_PATH . 'assets/cf7-timing.js')) {
+            return;
+        }
+
         wp_enqueue_script(
             'smtp-fallback-cf7-timing',
             SMTP_FALLBACK_PLUGIN_URL . 'assets/cf7-timing.js',
@@ -2777,6 +3002,9 @@ class SMTP_Fallback_Plugin {
 
 // Register activation hook
 register_activation_hook(__FILE__, array('SMTP_Fallback_Plugin', 'plugin_activation'));
+
+// Register custom cron interval (must be before plugin init)
+add_filter('cron_schedules', array('SMTP_Fallback_Plugin', 'add_cron_interval'));
 
 // Initialize the plugin
 global $smtp_fallback_plugin;

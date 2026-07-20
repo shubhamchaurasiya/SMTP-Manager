@@ -2,15 +2,42 @@
    SMTP Manager — Frontend SPA
    ═══════════════════════════════════════════════════════════════ */
 
+// ── Auth ─────────────────────────────────────────────────────────
+function getToken() { return localStorage.getItem('smtp_token') || ''; }
+function logout() {
+  fetch('/api/logout', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Authorization': 'Bearer ' + getToken() }
+  }).catch(() => {});
+  localStorage.removeItem('smtp_token');
+  localStorage.removeItem('smtp_user');
+  window.location.replace('/login');
+}
+// Guard: redirect to login if no token
+if (!getToken() && !window.location.pathname.includes('login')) {
+  window.location.replace('/login');
+}
+// Show username in sidebar
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('sb-username');
+  if (el) el.textContent = localStorage.getItem('smtp_user') || 'admin';
+});
+
 // ── API Client ──────────────────────────────────────────────────
 const api = {
   async req(method, path, body) {
     const opts = {
       method,
-      headers: { 'Content-Type': 'application/json' }
+      credentials: 'include',  // send cookie on every API request
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': 'Bearer ' + getToken()
+      }
     };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch('/api' + path, opts);
+    if (res.status === 401) { logout(); return; }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
