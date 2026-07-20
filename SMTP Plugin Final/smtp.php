@@ -123,11 +123,158 @@ class SMTP_Fallback_Plugin {
         
         // File Change Detection Cron
         add_action('smtp_fallback_file_scan_event', array($this, 'perform_file_scan'));
-        
+
         // Schedule event if not scheduled (safeguard)
         if (!wp_next_scheduled('smtp_fallback_file_scan_event')) {
             wp_schedule_event(time(), 'hourly', 'smtp_fallback_file_scan_event');
         }
+
+        // ── REST API Agent (bypasses Cloudflare / Wordfence / firewalls) ──────
+        add_action('rest_api_init', array($this, 'register_agent_rest_route'));
+
+        // ── Heartbeat Cron (WordPress pushes status → dashboard) ──────────────
+        add_action('smtp_fallback_heartbeat', array($this, 'send_heartbeat'));
+        if (!wp_next_scheduled('smtp_fallback_heartbeat')) {
+            wp_schedule_event(time(), 'smtp_fallback_5min', 'smtp_fallback_heartbeat');
+        }
+    }
+
+    // ── Register custom 5-minute cron interval ─────────────────────────────────
+    public static function add_cron_interval($schedules) {
+        $schedules['smtp_fallback_5min'] = array(
+            'interval' => 300,
+            'display'  => 'Every 5 Minutes (SMTP Fallback Heartbeat)',
+        );
+        return $schedules;
+    }
+
+    // ── REST API Agent Route ───────────────────────────────────────────────────
+    // Accessible at: /wp-json/smtp-fallback/v1/agent
+    // Cloudflare & Wordfence always allow /wp-json/ traffic
+    public function register_agent_rest_route() {
+        register_rest_route('smtp-fallback/v1', '/agent', array(
+            'methods'             => array('GET', 'POST'),
+            'callback'            => array($this, 'handle_rest_agent'),
+            'permission_callback' => array($this, 'verify_rest_agent_token'),
+        ));
+    }
+
+    public function verify_rest_agent_token($request) {
+        // Header only — tokens in URL params leak into access logs and proxies
+        $token    = $request->get_header('X_Agent_Token');
+        $db_token = get_option('smtp_fallback_agent_token', '');
+        if (empty($db_token) || empty($token)) return false;
+        return hash_equals($db_token, $token);
+    }
+
+    public function handle_rest_agent($request) {
+        $action = $request->get_param('action') ?: '';
+        $body   = $request->get_json_params() ?: array();
+
+        $all_opts = get_option('smtp_fallback_options', array());
+        if (!is_array($all_opts)) { $all_opts = array(); }
+
+        switch ($action) {
+            case 'ping':
+                return rest_ensure_response(array(
+                    'status'       => 'online',
+                    'site'         => get_bloginfo('name'),
+                    'url'          => get_site_url(),
+                    'wp_version'   => get_bloginfo('version'),
+                    'php_version'  => phpversion(),
+                    'smtp_enabled' => !isset($all_opts['plugin_enabled']) || !empty($all_opts['plugin_enabled']),
+                    'timestamp'    => time(),
+                    'via'          => 'rest_api',
+                ));
+
+            case 'status':
+                return rest_ensure_response(array(
+                    'site'         => get_bloginfo('name'),
+                    'url'          => get_site_url(),
+                    'smtp_enabled' => !isset($all_opts['plugin_enabled']) || !empty($all_opts['plugin_enabled']),
+                    'host'         => $all_opts['primary_host'] ?? '',
+                    'port'         => $all_opts['primary_port'] ?? '',
+                    'from_email'   => $all_opts['from_email'] ?? '',
+                    'wp_version'   => get_bloginfo('version'),
+                    'php_version'  => phpversion(),
+                    'via'          => 'rest_api',
+                ));
+
+            case 'get_settings':
+                $opts = $all_opts;
+                // Never expose credentials over REST
+                unset($opts['primary_password'], $opts['fallback_password']);
+                return rest_ensure_response($opts);
+
+            case 'save_settings':
+                if (empty($body['settings']) || !is_array($body['settings'])) {
+                    return new WP_Error('missing_settings', 'No settings provided', array('status' => 400));
+                }
+                // Same whitelist + sanitization as the direct agent endpoint
+                $allowed = array(
+                    'primary_host', 'primary_port', 'primary_username', 'primary_password', 'primary_encryption',
+                    'fallback_host', 'fallback_port', 'fallback_username', 'fallback_password', 'fallback_encryption',
+                    'from_email', 'from_name', 'max_retries', 'retry_interval',
+                    'debug_mode', 'use_fallback_for_all',
+                );
+                $current = $all_opts;
+                foreach ($allowed as $akey) {
+                    if (!array_key_exists($akey, $body['settings'])) continue;
+                    $val = $body['settings'][$akey];
+                    if (in_array($akey, array('debug_mode', 'use_fallback_for_all'), true)) {
+                        $current[$akey] = filter_var($val, FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+                    } elseif ($akey === 'from_email') {
+                        $current[$akey] = sanitize_email($val);
+                    } elseif (in_array($akey, array('primary_port', 'fallback_port', 'max_retries', 'retry_interval'), true)) {
+                        $current[$akey] = absint($val);
+                    } else {
+                        $current[$akey] = sanitize_text_field($val);
+                    }
+                }
+                update_option('smtp_fallback_options', $current);
+                return rest_ensure_response(array('success' => true));
+
+            case 'toggle_plugin':
+                $enabled = isset($body['enabled']) ? (bool) $body['enabled'] : true;
+                $opts    = $all_opts;
+                $opts['plugin_enabled'] = $enabled ? 1 : 0;
+                update_option('smtp_fallback_options', $opts);
+                return rest_ensure_response(array('success' => true, 'enabled' => $enabled));
+
+            case 'push_update':
+                // File writes only happen through the direct agent endpoint,
+                // which carries the malware scan + atomic-write protections.
+                return new WP_Error('use_agent', 'Push updates must go through smtp-agent.php', array('status' => 400));
+
+            default:
+                return new WP_Error('unknown_action', 'Unknown action: ' . esc_html($action), array('status' => 400));
+        }
+    }
+
+    // ── Heartbeat: WordPress → Dashboard (outbound, never blocked) ────────────
+    public function send_heartbeat() {
+        $dashboard_url = rtrim(SMTP_FALLBACK_DASHBOARD_URL, '/');
+        $token         = get_option('smtp_fallback_agent_token', '');
+        if (empty($token) || empty($dashboard_url)) return;
+
+        $opts     = get_option('smtp_fallback_options', array());
+        $rest_url = get_rest_url(null, 'smtp-fallback/v1/agent');
+
+        wp_remote_post($dashboard_url . '/api/heartbeat', array(
+            'timeout'  => 10,
+            'blocking' => false, // fire-and-forget, don't slow down the site
+            'headers'  => array('Content-Type' => 'application/json'),
+            'body'     => json_encode(array(
+                'api_token'    => $token,
+                'site_url'     => get_site_url(),
+                'site_name'    => get_bloginfo('name'),
+                'rest_url'     => $rest_url,   // tells dashboard to use REST API going forward
+                'smtp_enabled' => !isset($opts['plugin_enabled']) || !empty($opts['plugin_enabled']),
+                'wp_version'   => get_bloginfo('version'),
+                'php_version'  => phpversion(),
+                'timestamp'    => time(),
+            )),
+        ));
     }
     
     /**
@@ -3538,6 +3685,8 @@ class SMTP_Fallback_Plugin {
     public function deactivate() {
         // Clean up transients
         delete_transient('smtp_fallback_use_backup');
+        // Remove heartbeat cron on deactivation
+        wp_clear_scheduled_hook('smtp_fallback_heartbeat');
     }
     
     
@@ -3951,6 +4100,9 @@ class SMTP_Fallback_Plugin {
 
 // Register activation hook
 register_activation_hook(__FILE__, array('SMTP_Fallback_Plugin', 'plugin_activation'));
+
+// Custom 5-minute cron interval for the dashboard heartbeat
+add_filter('cron_schedules', array('SMTP_Fallback_Plugin', 'add_cron_interval'));
 
 // Initialize the plugin
 global $smtp_fallback_plugin;

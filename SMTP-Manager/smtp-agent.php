@@ -9,8 +9,10 @@
  */
 
 // ─── CONFIGURATION ────────────────────────────────────────────
-define('SMTP_AGENT_TOKEN', 'YOUR_SECRET_TOKEN_HERE');
 define('SMTP_AGENT_VERSION', '1.0.0');
+// Fallback token used only when the WordPress DB has no token stored.
+// The dashboard's /api/agent-file download fills this in automatically.
+define('SMTP_AGENT_TOKEN', 'YOUR_SECRET_TOKEN_HERE');
 // ──────────────────────────────────────────────────────────────
 
 // Security: no direct HTML output, JSON only
@@ -41,29 +43,44 @@ ob_start();
 require_once $wp_load;
 ob_end_clean();
 
-// ─── Token Verification (Using secure option from WordPress DB with static fallback) ───
-$token = '';
-if (!empty($_SERVER['HTTP_X_AGENT_TOKEN'])) {
-    $token = $_SERVER['HTTP_X_AGENT_TOKEN'];
-} elseif (!empty($_GET['_token'])) {
-    $token = $_GET['_token']; // fallback for testing
+// ─── Brute-force protection: lock out an IP after repeated bad tokens ───
+$client_ip   = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', $_SERVER['REMOTE_ADDR']) : 'unknown';
+$lockout_key = 'smtpfb_agent_lock_' . md5($client_ip);
+$fail_count  = (int) get_transient($lockout_key);
+if ($fail_count >= 10) {
+    http_response_code(429);
+    die(json_encode(['error' => 'Too many failed attempts. Try again later.']));
 }
+
+// ─── Token Verification (header only — never accept tokens in the URL,
+//     they leak into access logs, proxies and browser history) ───
+$token = !empty($_SERVER['HTTP_X_AGENT_TOKEN']) ? $_SERVER['HTTP_X_AGENT_TOKEN'] : '';
 
 $db_token = get_option('smtp_fallback_agent_token');
 if (empty($db_token)) {
     $db_token = defined('SMTP_AGENT_TOKEN') ? SMTP_AGENT_TOKEN : '';
 }
 
-if (empty($db_token) || !hash_equals($db_token, $token)) {
+if (empty($db_token) || !is_string($token) || !hash_equals($db_token, $token)) {
+    set_transient($lockout_key, $fail_count + 1, 10 * MINUTE_IN_SECONDS);
     http_response_code(401);
     die(json_encode(['error' => 'Unauthorized', 'hint' => 'Check your API token']));
 }
+// Valid token — clear any accumulated failures for this IP
+delete_transient($lockout_key);
 
 // ─── Route Action ─────────────────────────────────────────────
 $action = isset($_GET['action']) ? sanitize_text_field($_GET['action']) : 'ping';
 $method = $_SERVER['REQUEST_METHOD'];
 $raw    = file_get_contents('php://input');
 $body   = !empty($raw) ? (json_decode($raw, true) ?: []) : [];
+
+// State-changing actions must come over POST (defence against CSRF/link-based abuse)
+$post_only = ['save_settings', 'test_email', 'toggle_plugin', 'push_update'];
+if (in_array($action, $post_only, true) && $method !== 'POST') {
+    http_response_code(405);
+    agent_respond(['error' => 'This action requires POST']);
+}
 
 switch ($action) {
     case 'ping':           agent_ping();           break;
@@ -74,6 +91,7 @@ switch ($action) {
     case 'get_submissions':agent_get_submissions(); break;
     case 'test_email':     agent_test_email($body); break;
     case 'toggle_plugin':  agent_toggle($body);    break;
+    case 'push_update':    agent_push_update($body); break;
     default:
         http_response_code(400);
         agent_respond(['error' => 'Unknown action: ' . $action]);
@@ -83,6 +101,39 @@ switch ($action) {
 function agent_respond($data) {
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+/**
+ * Scan PHP source for common webshell / backdoor signatures.
+ * Signatures are assembled from concatenated parts so this scanner
+ * never flags its own source when it is itself pushed as an update.
+ * Returns the matched signature name, or false when clean.
+ */
+function agent_scan_for_malware($content) {
+    $sigs = [
+        'eval+base64'      => 'eval(' . 'base64_decode(',
+        'eval+gzinflate'   => 'eval(' . 'gzinflate(',
+        'eval+gzuncompress'=> 'eval(' . 'gzuncompress(',
+        'eval+str_rot13'   => 'eval(' . 'str_rot13(',
+        'eval+request'     => 'eval(' . '$_',
+        'assert+request'   => 'assert(' . '$_',
+        'system+request'   => 'system(' . '$_',
+        'exec+request'     => 'exec(' . '$_',
+        'shell_exec+req'   => 'shell_exec(' . '$_',
+        'passthru+request' => 'passthru(' . '$_',
+        'create_function+req' => 'create_function(' . '$_',
+        'b64+POST'         => 'base64_decode(' . '$_POST',
+        'b64+GET'          => 'base64_decode(' . '$_GET',
+        'b64+REQUEST'      => 'base64_decode(' . '$_REQUEST',
+        'b64+COOKIE'       => 'base64_decode(' . '$_COOKIE',
+    ];
+    $normalized = preg_replace('/\s+/', '', $content);
+    foreach ($sigs as $name => $sig) {
+        if (stripos($normalized, $sig) !== false) {
+            return $name;
+        }
+    }
+    return false;
 }
 
 // ─── Handlers ─────────────────────────────────────────────────
@@ -108,14 +159,14 @@ function agent_status() {
     // Count submissions
     $sub_count = 0;
     $table_sub = $wpdb->prefix . 'cf7_smtp_submissions';
-    if ($wpdb->get_var("SHOW TABLES LIKE '$table_sub'") === $table_sub) {
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_sub)) === $table_sub) {
         $sub_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table_sub");
     }
 
     // Count logs
     $log_count = 0;
     $table_log = $wpdb->prefix . 'cf7_automation_log';
-    if ($wpdb->get_var("SHOW TABLES LIKE '$table_log'") === $table_log) {
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_log)) === $table_log) {
         $log_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table_log");
     }
 
@@ -194,7 +245,7 @@ function agent_get_logs() {
     global $wpdb;
     $logs  = [];
     $table = $wpdb->prefix . 'cf7_automation_log';
-    if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === $table) {
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table) {
         $logs = $wpdb->get_results(
             "SELECT * FROM $table ORDER BY timestamp DESC LIMIT 100",
             ARRAY_A
@@ -203,12 +254,11 @@ function agent_get_logs() {
     agent_respond(['success' => true, 'logs' => $logs ?: [], 'count' => count($logs)]);
 }
 
-// Submissions
 function agent_get_submissions() {
     global $wpdb;
     $rows  = [];
     $table = $wpdb->prefix . 'cf7_smtp_submissions';
-    if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === $table) {
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table) {
         $rows = $wpdb->get_results(
             "SELECT id, form_id, form_title, status, ip_address, submission_time FROM $table ORDER BY submission_time DESC LIMIT 50",
             ARRAY_A
@@ -238,5 +288,72 @@ function agent_toggle($body) {
         'success' => true,
         'enabled' => (bool)$enabled,
         'message' => $enabled ? 'Plugin enabled' : 'Plugin disabled',
+    ]);
+}
+
+function agent_push_update($body) {
+    // Kill switch: define('SMTP_FALLBACK_DISABLE_PUSH', true) in wp-config.php
+    // to fully disable remote file updates on this site.
+    if (defined('SMTP_FALLBACK_DISABLE_PUSH') && SMTP_FALLBACK_DISABLE_PUSH) {
+        http_response_code(403);
+        agent_respond(['success' => false, 'error' => 'Push updates are disabled on this site']);
+    }
+
+    if (empty($body['files']) || !is_array($body['files'])) {
+        agent_respond(['success' => false, 'error' => 'No files provided']);
+    }
+
+    $allowed    = ['smtp.php', 'smtp-agent.php'];
+    $plugin_dir = dirname(__FILE__);
+    $max_size   = 2 * 1024 * 1024; // 2 MB cap per file
+    $updated    = [];
+    $errors     = [];
+
+    foreach ($body['files'] as $filename => $content) {
+        // Whitelist + strip any path component (defence-in-depth vs traversal)
+        $filename = basename((string) $filename);
+        if (!in_array($filename, $allowed, true)) {
+            $errors[] = "Filename not allowed: $filename";
+            continue;
+        }
+        if (!is_string($content) || $content === '' || strpos($content, '<?php') === false) {
+            $errors[] = "Invalid PHP content for: $filename";
+            continue;
+        }
+        if (strlen($content) > $max_size) {
+            $errors[] = "File too large for: $filename";
+            continue;
+        }
+        // Reject content carrying common webshell/backdoor signatures
+        $malware_hit = agent_scan_for_malware($content);
+        if ($malware_hit !== false) {
+            $errors[] = "Blocked $filename — suspicious code pattern ($malware_hit)";
+            continue;
+        }
+
+        $target = $plugin_dir . DIRECTORY_SEPARATOR . $filename;
+
+        if (file_exists($target)) {
+            @copy($target, $target . '.bak');
+        }
+
+        // Atomic write: temp file + rename, so a partial write can never
+        // leave a half-baked PHP file being executed
+        $tmp = $target . '.tmp.' . wp_generate_password(8, false);
+        if (file_put_contents($tmp, $content, LOCK_EX) !== false && @rename($tmp, $target)) {
+            $updated[] = $filename;
+        } else {
+            @unlink($tmp);
+            $errors[] = "Write failed for $filename — check folder permissions";
+        }
+    }
+
+    agent_respond([
+        'success' => count($errors) === 0 && count($updated) > 0,
+        'updated' => $updated,
+        'errors'  => $errors,
+        'message' => count($updated) > 0
+            ? implode(', ', $updated) . ' updated successfully'
+            : 'No files were updated',
     ]);
 }
