@@ -742,24 +742,35 @@ app.get('/api/generate-token', (req, res) => {
   res.json({ token });
 });
 
-// Download ready-to-use smtp-agent.php with token pre-filled
+// Download ready-to-use smtp-agent.php with token pre-filled.
+// Sourced from plugin/smtp-agent.php — the same copy that gets pushed to sites —
+// so a downloaded agent can never drift from a pushed one.
 app.get('/api/agent-file', (req, res) => {
   const token     = (req.query.token || '').trim();
-  const agentPath = path.join(__dirname, 'smtp-agent.php');
+  const agentPath = path.join(__dirname, 'plugin', 'smtp-agent.php');
 
   if (!token) return res.status(400).json({ error: 'token query parameter is required' });
+  // The token is interpolated into a PHP single-quoted string — restrict it to
+  // characters that cannot escape that string or inject code.
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(token))
+    return res.status(400).json({ error: 'Invalid token format' });
   if (!fs.existsSync(agentPath))
     return res.status(404).json({ error: 'smtp-agent.php not found' });
 
-  let content = fs.readFileSync(agentPath, 'utf8');
-  content = content.replace(
-    "define('SMTP_AGENT_TOKEN', 'YOUR_SECRET_TOKEN_HERE');",
-    `define('SMTP_AGENT_TOKEN', '${token}');`
+  const content   = fs.readFileSync(agentPath, 'utf8');
+  const versionRe = /define\('SMTP_AGENT_VERSION',\s*'[^']*'\);/;
+  if (!versionRe.test(content))
+    return res.status(500).json({ error: 'Cannot locate version define in smtp-agent.php' });
+
+  // Insert the fallback token define straight after the version define. It is
+  // only used when the WordPress DB has no token stored.
+  const withToken = content.replace(versionRe, match =>
+    `${match}\n// Fallback token used only when the WordPress DB has no token stored.\ndefine('SMTP_AGENT_TOKEN', '${token}');`
   );
 
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', 'attachment; filename="smtp-agent.php"');
-  res.send(content);
+  res.send(withToken);
 });
 
 // ─── Start (local dev) / Export (Vercel) ─────────────────────────────────────
