@@ -1393,14 +1393,21 @@ async function renderUpdates() {
       <div class="card-body">
         <div class="form-group">
           <label class="form-label">File</label>
-          <select id="upload-filename" class="form-select" style="max-width:260px">
+          <select id="upload-filename" class="form-select" style="max-width:320px">
             <option value="smtp.php">smtp.php  (main plugin)</option>
             <option value="smtp-agent.php">smtp-agent.php  (agent)</option>
+            <option value="includes/cf7-integration.php">includes/cf7-integration.php  (CF7 integration)</option>
+            <option value="assets/cf7-timing.js">assets/cf7-timing.js  (CF7 timing script)</option>
+            <option value="assets/admin.js">assets/admin.js  (admin script)</option>
+            <option value="assets/admin.css">assets/admin.css  (admin styles)</option>
+            <option value="index.php">index.php  (folder guard)</option>
+            <option value="includes/index.php">includes/index.php  (folder guard)</option>
+            <option value="assets/index.php">assets/index.php  (folder guard)</option>
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Paste PHP File Content</label>
-          <textarea id="upload-content" class="form-textarea" style="min-height:120px;font-family:monospace;font-size:12px" placeholder="Paste the full content of the updated PHP file here (must start with &lt;?php)..."></textarea>
+          <label class="form-label">Paste File Content</label>
+          <textarea id="upload-content" class="form-textarea" style="min-height:120px;font-family:monospace;font-size:12px" placeholder="Paste the full content of the updated file here (PHP files must start with &lt;?php)..."></textarea>
         </div>
         <button class="btn btn-primary" onclick="uploadPluginFile()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1491,7 +1498,9 @@ async function uploadPluginFile() {
   const filename = document.getElementById('upload-filename')?.value;
   const content  = document.getElementById('upload-content')?.value.trim();
   if (!content) return toast('Please paste the file content first', 'error');
-  if (!content.startsWith('<?php')) return toast('Content must start with <?php', 'error');
+  const isPhp = filename.endsWith('.php');
+  if (isPhp && !content.startsWith('<?php')) return toast('PHP content must start with <?php', 'error');
+  if (!isPhp && content.includes('<?php')) return toast('PHP code is not allowed in asset files', 'error');
   try {
     const r = await api.post('/updates/upload', { filename, content });
     toast(`✅ ${filename} v${r.version} saved to dashboard (${(r.size/1024).toFixed(1)} KB)`, 'success', 6000);

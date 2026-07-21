@@ -5,11 +5,13 @@
  * Place this file in the same plugin folder as smtp.php on each WordPress site.
  * Example path: wp-content/plugins/SMTP Plugin/smtp-agent.php
  *
+ * Version: 1.1.0
+ *
  * IMPORTANT: Change the token below to the token shown in the SMTP Manager Dashboard.
  */
 
 // ─── CONFIGURATION ────────────────────────────────────────────
-define('SMTP_AGENT_VERSION', '1.0.0');
+define('SMTP_AGENT_VERSION', '1.1.0');
 // Fallback token used only when the WordPress DB has no token stored.
 // The dashboard's /api/agent-file download fills this in automatically.
 define('SMTP_AGENT_TOKEN', 'YOUR_SECRET_TOKEN_HERE');
@@ -303,21 +305,43 @@ function agent_push_update($body) {
         agent_respond(['success' => false, 'error' => 'No files provided']);
     }
 
-    $allowed    = ['smtp.php', 'smtp-agent.php'];
+    // Relative paths inside the plugin folder that may be updated remotely —
+    // must match PLUGIN_PUSH_FILES in the dashboard's server.js
+    $allowed    = [
+        'smtp.php',
+        'smtp-agent.php',
+        'index.php',
+        'includes/cf7-integration.php',
+        'includes/index.php',
+        'assets/admin.css',
+        'assets/admin.js',
+        'assets/cf7-timing.js',
+        'assets/index.php',
+    ];
     $plugin_dir = dirname(__FILE__);
     $max_size   = 2 * 1024 * 1024; // 2 MB cap per file
     $updated    = [];
     $errors     = [];
 
     foreach ($body['files'] as $filename => $content) {
-        // Whitelist + strip any path component (defence-in-depth vs traversal)
-        $filename = basename((string) $filename);
-        if (!in_array($filename, $allowed, true)) {
+        // Normalise separators, then require an exact whitelist match
+        // (defence-in-depth vs path traversal)
+        $filename = str_replace('\\', '/', (string) $filename);
+        if (strpos($filename, '..') !== false || !in_array($filename, $allowed, true)) {
             $errors[] = "Filename not allowed: $filename";
             continue;
         }
-        if (!is_string($content) || $content === '' || strpos($content, '<?php') === false) {
+        if (!is_string($content) || $content === '') {
+            $errors[] = "Empty content for: $filename";
+            continue;
+        }
+        $is_php = substr($filename, -4) === '.php';
+        if ($is_php && strpos($content, '<?php') === false) {
             $errors[] = "Invalid PHP content for: $filename";
+            continue;
+        }
+        if (!$is_php && strpos($content, '<?php') !== false) {
+            $errors[] = "PHP code not allowed in asset file: $filename";
             continue;
         }
         if (strlen($content) > $max_size) {
@@ -331,7 +355,12 @@ function agent_push_update($body) {
             continue;
         }
 
-        $target = $plugin_dir . DIRECTORY_SEPARATOR . $filename;
+        $target     = $plugin_dir . '/' . $filename;
+        $target_dir = dirname($target);
+        if (!is_dir($target_dir) && !wp_mkdir_p($target_dir)) {
+            $errors[] = "Cannot create folder for $filename";
+            continue;
+        }
 
         if (file_exists($target)) {
             @copy($target, $target . '.bak');

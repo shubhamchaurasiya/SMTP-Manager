@@ -12,6 +12,21 @@ const crypto    = require('crypto');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// Plugin files distributed to WordPress sites via Push Updates.
+// Relative paths inside the plugin folder, always forward slashes —
+// must match the $allowed whitelist in smtp-agent.php agent_push_update().
+const PLUGIN_PUSH_FILES = [
+  'smtp.php',
+  'smtp-agent.php',
+  'index.php',
+  'includes/cf7-integration.php',
+  'includes/index.php',
+  'assets/admin.css',
+  'assets/admin.js',
+  'assets/cf7-timing.js',
+  'assets/index.php',
+];
+
 // ─── Database ─────────────────────────────────────────────────────────────────
 const db = createClient({
   url:       process.env.TURSO_DATABASE_URL || 'file:local.db',
@@ -60,7 +75,7 @@ async function initDB() {
   // Refreshes the DB copy whenever the bundled file differs from what's stored,
   // so every deploy automatically updates the files that get pushed to sites.
   const PLUGIN_DIR = path.join(__dirname, 'plugin');
-  for (const filename of ['smtp.php', 'smtp-agent.php']) {
+  for (const filename of PLUGIN_PUSH_FILES) {
     const filePath = path.join(PLUGIN_DIR, filename);
     if (fs.existsSync(filePath)) {
       const content  = fs.readFileSync(filePath, 'utf8');
@@ -589,9 +604,11 @@ app.get('/api/updates/info', async (req, res) => {
 // Upload / replace a plugin file in DB
 app.post('/api/updates/upload', async (req, res) => {
   const { filename, content } = req.body;
-  const allowed = ['smtp.php', 'smtp-agent.php'];
-  if (!allowed.includes(filename)) return res.status(400).json({ error: 'Filename not allowed' });
-  if (!content || !content.includes('<?php')) return res.status(400).json({ error: 'Invalid PHP content' });
+  if (!PLUGIN_PUSH_FILES.includes(filename)) return res.status(400).json({ error: 'Filename not allowed' });
+  if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Content is required' });
+  const isPhp = filename.endsWith('.php');
+  if (isPhp && !content.includes('<?php')) return res.status(400).json({ error: 'Invalid PHP content' });
+  if (!isPhp && content.includes('<?php')) return res.status(400).json({ error: 'PHP code not allowed in asset files' });
   const verMatch = content.match(/Version:\s*([^\n\r*]+)/);
   const version  = verMatch ? verMatch[1].trim() : 'unknown';
   await dbRun('INSERT OR REPLACE INTO plugin_files (filename, content, version, uploaded_at) VALUES (?, ?, ?, ?)',
