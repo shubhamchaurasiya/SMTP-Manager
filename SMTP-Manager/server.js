@@ -597,8 +597,14 @@ app.post('/api/settings', async (req, res) => {
 
 // ─── Plugin Update Push (files stored in Turso DB — works reliably in serverless) ─
 app.get('/api/updates/info', async (req, res) => {
-  const rows = await dbAll('SELECT filename, version, uploaded_at, length(content) AS size FROM plugin_files');
-  res.json(rows.map(r => ({ ...r, found: true })));
+  const rows  = await dbAll('SELECT filename, version, uploaded_at, length(content) AS size FROM plugin_files');
+  const files = rows.map(r => ({ ...r, found: true }));
+  const have  = new Set(files.map(f => f.filename));
+  res.json({
+    files,
+    expected: PLUGIN_PUSH_FILES,
+    missing:  PLUGIN_PUSH_FILES.filter(f => !have.has(f)),
+  });
 });
 
 // Upload / replace a plugin file in DB
@@ -616,12 +622,24 @@ app.post('/api/updates/upload', async (req, res) => {
   res.json({ success: true, filename, version, size: content.length });
 });
 
-// Helper: load all plugin files from DB as { filename: content }
+// Helper: load all plugin files from DB as { filename: content }.
+// Refuses to return a partial set: smtp.php requires includes/cf7-integration.php
+// at load time, so pushing some-but-not-all files can break a live site. If the
+// bundled plugin/ folder ever fails to ship, this fails loudly instead.
 async function loadPluginFiles() {
   const rows = await dbAll('SELECT filename, content FROM plugin_files');
   if (!rows.length) throw { status: 400, message: 'No plugin files in DB. Upload them first from the Push Updates page.' };
   const files = {};
   rows.forEach(r => { files[r.filename] = r.content; });
+
+  const missing = PLUGIN_PUSH_FILES.filter(f => !files[f]);
+  if (missing.length) {
+    throw {
+      status: 400,
+      message: `Refusing to push an incomplete plugin: missing ${missing.join(', ')}. ` +
+               `Redeploy the dashboard, or upload the missing file(s) on this page.`
+    };
+  }
   return files;
 }
 

@@ -1513,13 +1513,27 @@ async function uploadPluginFile() {
 }
 
 function renderVersionInfo(el, info) {
-  if (!info.length) {
+  // /updates/info returns { files, expected, missing }
+  const files   = Array.isArray(info) ? info : (info.files || []);
+  const missing = (Array.isArray(info) ? [] : info.missing) || [];
+
+  if (!files.length) {
     el.innerHTML = `<p style="color:var(--yellow)">⚠️ No plugin files uploaded yet. Paste file content above and click Save.</p>`;
     return;
   }
-  el.innerHTML = `
+
+  const warning = missing.length ? `
+    <div style="padding:14px;margin-bottom:16px;border-radius:10px;background:rgba(255,80,80,.08);border:1px solid var(--red)">
+      <div style="font-weight:800;color:var(--red);margin-bottom:6px">⚠️ Incomplete plugin — pushing is blocked</div>
+      <div style="font-size:13px;color:var(--text2)">
+        Missing: <code>${missing.map(esc).join('</code>, <code>')}</code><br>
+        Redeploy the dashboard, or paste the missing file(s) above to restore them.
+      </div>
+    </div>` : '';
+
+  el.innerHTML = warning + `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      ${info.map(f => `
+      ${files.map(f => `
         <div style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:10px">
           <div style="font-size:12px;color:var(--text3);text-transform:uppercase;font-weight:700;margin-bottom:6px">${esc(f.filename)}</div>
           <div style="font-size:20px;font-weight:800;color:var(--text)">v${esc(f.version)}</div>
