@@ -3,7 +3,7 @@
  * Plugin Name: SMTP Fallback
  * Plugin URI: https://www.rankmybusiness.com.au/
  * Description: Advanced SMTP fallback plugin with retry mechanism, multiple server support, and comprehensive configuration options.
- * Version: 2.1.0
+ * Version: 2.1.1
  * Author: Shubham Chaurasiya
  * License: GPL v2 or later
  * Text Domain: smtp-fallback
@@ -4172,6 +4172,8 @@ if (!function_exists('smtp_fallback_test_system')) {
 }
 
 // Contact Form 7 Integration
-if (class_exists('WPCF7')) {
+// file_exists guard: a pushed update can briefly deliver smtp.php before
+// includes/cf7-integration.php lands — never fatal the site over it
+if (class_exists('WPCF7') && file_exists(plugin_dir_path(__FILE__) . 'includes/cf7-integration.php')) {
     require_once plugin_dir_path(__FILE__) . 'includes/cf7-integration.php';
 }

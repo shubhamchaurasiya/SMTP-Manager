@@ -625,11 +625,39 @@ async function loadPluginFiles() {
   return files;
 }
 
+// Push plugin files to one site in two phases: the agent file first, then
+// everything else. Agents older than 1.1.0 reject subdirectory paths but
+// accept smtp.php — a single-call push against an old agent could write the
+// new smtp.php while its includes/ dependency gets rejected, breaking the
+// site. Upgrading the agent first makes the full push safe.
+async function pushFilesToSite(site, files) {
+  if (files['smtp-agent.php']) {
+    const phase1 = await callAgent(site, 'push_update', 'POST', {
+      files: { 'smtp-agent.php': files['smtp-agent.php'] }
+    });
+    if (!phase1 || phase1.success !== true) {
+      return phase1 || { success: false, error: 'Agent update failed' };
+    }
+    // Give PHP opcache time to pick up the replaced agent before the full push
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  const rest = { ...files };
+  delete rest['smtp-agent.php'];
+  if (!Object.keys(rest).length) {
+    return { success: true, updated: ['smtp-agent.php'], message: 'smtp-agent.php updated successfully' };
+  }
+  const phase2 = await callAgent(site, 'push_update', 'POST', { files: rest });
+  if (phase2 && Array.isArray(phase2.updated) && files['smtp-agent.php']) {
+    phase2.updated.unshift('smtp-agent.php');
+  }
+  return phase2;
+}
+
 // Push to a single site
 app.post('/api/updates/push/:id', wrap(async (req, res) => {
   const site  = await getSite(req.params.id);
   const files = await loadPluginFiles();
-  const data  = await callAgent(site, 'push_update', 'POST', { files });
+  const data  = await pushFilesToSite(site, files);
   res.json({ id: site.id, name: site.name, url: site.url, ...data });
 }));
 
@@ -643,7 +671,7 @@ app.post('/api/updates/push-all', async (req, res) => {
   const results = [];
   for (const site of sites) {
     try {
-      const data = await callAgent(site, 'push_update', 'POST', { files });
+      const data = await pushFilesToSite(site, files);
       results.push({ id: site.id, name: site.name, url: site.url, ...data });
     } catch (err) {
       results.push({ id: site.id, name: site.name, url: site.url, success: false, error: err.message });
